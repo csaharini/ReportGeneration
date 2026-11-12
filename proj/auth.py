@@ -61,13 +61,13 @@ def _validate_password(value):
 
 
 def _public_user(row):
-    return {"id": row["id"], "email": row["email"], "display_name": row["display_name"]}
+    return {"id": row["id"], "email": row["email"], "full_name": row["full_name"]}
 
 
-def create_user(display_name, email, password):
-    name = str(display_name or "").strip()
+def create_user(full_name, email, password):
+    name = str(full_name or "").strip()
     if not 2 <= len(name) <= 160:
-        raise AuthError("Display name must be between 2 and 160 characters.")
+        raise AuthError("Full name must be between 2 and 160 characters.")
     email = _normalise_email(email)
     password = _validate_password(password)
     password_hash = bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
@@ -75,7 +75,7 @@ def create_user(display_name, email, password):
         with _connection() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "INSERT INTO users (email, password_hash, display_name, is_active) VALUES (%s, %s, %s, 1)",
+                    "INSERT INTO users (email, password_hash, full_name, is_active) VALUES (%s, %s, %s, 1)",
                     (email, password_hash, name),
                 )
                 user_id = cursor.lastrowid
@@ -83,7 +83,7 @@ def create_user(display_name, email, password):
         if exc.args and exc.args[0] == 1062:
             raise AuthError("An account with this email already exists.") from exc
         raise AuthConfigurationError("The authentication service is unavailable.") from exc
-    return {"id": user_id, "email": email, "display_name": name}
+    return {"id": user_id, "email": email, "full_name": name}
 
 
 def authenticate(email, password):
@@ -92,7 +92,7 @@ def authenticate(email, password):
     with _connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT id, email, password_hash, display_name, is_active FROM users WHERE email = %s LIMIT 1",
+                "SELECT id, email, password_hash, full_name, is_active FROM users WHERE email = %s LIMIT 1",
                 (email,),
             )
             row = cursor.fetchone()
@@ -114,7 +114,7 @@ def get_user(user_id):
     with _connection() as connection:
         with connection.cursor() as cursor:
             cursor.execute(
-                "SELECT id, email, display_name FROM users WHERE id = %s AND is_active = 1 LIMIT 1",
+                "SELECT id, email, full_name FROM users WHERE id = %s AND is_active = 1 LIMIT 1",
                 (user_id,),
             )
             row = cursor.fetchone()

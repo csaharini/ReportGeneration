@@ -4,7 +4,10 @@ uvicorn main:app --reload      # open http://127.0.0.1:8000
 
 - To enable automatic project lookup, set `RAE_DB_HOST`, `RAE_DB_PORT`, `RAE_DB_NAME`, `RAE_DB_USER`, and `RAE_DB_PASSWORD` on the app server; see `.env.example`.
 - Entering an RAE ID looks up `projects.project_id` and fills Project name with `projects.project_name`; it also accepts `subprojects.table_id` when a subproject ID is supplied. Projects without subprojects are supported.
-- Sign-up and sign-in use the existing `csareport.users` table. Set the `AUTH_DB_*` and `AUTH_SESSION_SECRET` environment variables; enable `AUTH_COOKIE_SECURE=1` when the app is served over HTTPS.
+- Sign-up and sign-in use the existing `csareport.users` table. Passwords are bcrypt hashes, and authentication uses an HttpOnly, signed session cookie with `SameSite=Strict` plus CSRF protection for every state-changing request.
+- The Summary of Compliance section loads its standard and clause dropdowns from `csareport.standards` and `csareport.standard_clauses`. Select **Manual** to add a reusable entry; completed manual entries are automatically upserted by standard code/edition and clause number. `STANDARDS_DB_*` can point at another MySQL database, or can be omitted to reuse `AUTH_DB_*`.
+- The Material library loads grades and mechanical properties from `csareport.materials`. Selecting a grade fills the report's material, tensile/yield strength, Young's modulus, Poisson's ratio, and density. Select **Manual** to upsert a new grade; `MATERIALS_DB_*` is optional and otherwise reuses `AUTH_DB_*`.
+- For deployment, set `APP_ENV=production`, a unique random `AUTH_SESSION_SECRET` of at least 32 characters, and serve only through HTTPS. The application then requires HTTPS-only cookies. Set `AUTH_COOKIE_SECURE=1` explicitly if desired; do not use the local-development settings in production.
 - Work through the four phases: project details, report content and images, layout, then review/export.
 - Use **Preview** to render the actual PDF before downloading it. You can set global text/heading/image placement and override the position and heading placement of each image.
 - Download either the controlled-layout PDF or a Word (.docx) companion document.

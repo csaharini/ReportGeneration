@@ -7,18 +7,81 @@ import config  # Loads local .env values before database modules are imported.
 import engine
 import project_lookup
 import auth
+import standards_library
+import materials_library
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _enabled(value):
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+_environment = os.getenv("APP_ENV", "development").strip().lower()
+_production = _environment in {"production", "prod"}
+_configured_secret = os.getenv("AUTH_SESSION_SECRET", "").strip()
+
+# A random development secret is convenient locally, but a deployment must use
+# a stable, private secret. Otherwise sessions could be forged or invalidated
+# whenever the service restarts.
+if not _configured_secret or _configured_secret == "replace-with-a-long-random-secret":
+    if _production:
+        raise RuntimeError("AUTH_SESSION_SECRET must be set in production.")
+    _configured_secret = secrets.token_urlsafe(48)
+elif len(_configured_secret) < 32:
+    raise RuntimeError("AUTH_SESSION_SECRET must contain at least 32 characters.")
+
+_secure_cookie = _enabled(os.getenv("AUTH_COOKIE_SECURE", "1" if _production else "0"))
+if _production and not _secure_cookie:
+    raise RuntimeError("AUTH_COOKIE_SECURE must be enabled in production.")
 
 app = FastAPI(title="Trailer Certification Report Generator")
 app.add_middleware(
     SessionMiddleware,
-    secret_key=os.getenv("AUTH_SESSION_SECRET", secrets.token_urlsafe(48)),
+    secret_key=_configured_secret,
     session_cookie="trailer_report_session",
     max_age=60 * 60 * 12,
-    same_site="lax",
-    https_only=os.getenv("AUTH_COOKIE_SECURE", "0").lower() in ("1", "true", "yes"),
+    # SessionMiddleware cookies are always HttpOnly. Strict blocks the browser
+    # from sending this cookie with cross-site navigation and requests.
+    same_site="strict",
+    https_only=_secure_cookie,
 )
+
+
+def _csrf_token(request: Request):
+    token = request.session.get("csrf_token")
+    if not token:
+        token = secrets.token_urlsafe(32)
+        request.session["csrf_token"] = token
+    return token
+
+
+def require_csrf(request: Request):
+    expected = request.session.get("csrf_token")
+    supplied = request.headers.get("X-CSRF-Token", "")
+    if not expected or not secrets.compare_digest(str(expected), supplied):
+        raise HTTPException(status_code=403, detail="Invalid or missing CSRF token.")
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), geolocation=(), microphone=()")
+    # The page contains inline styling and scripts, so these are allowed while
+    # all other script/style sources remain restricted to this application.
+    response.headers.setdefault(
+        "Content-Security-Policy",
+        "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; "
+        "frame-src 'self' blob:; img-src 'self' data: blob:; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'",
+    )
+    if request.url.path.startswith("/api/"):
+        response.headers.setdefault("Cache-Control", "no-store")
+    if _secure_cookie:
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
 
 
 def require_user(request: Request):
@@ -45,28 +108,36 @@ def schema(request: Request):
 
 @app.get("/api/auth/me")
 def current_user(request: Request):
-    return {"user": require_user(request)}
+    return {"user": require_user(request), "csrf_token": _csrf_token(request)}
+
+
+@app.get("/api/auth/csrf")
+def csrf_token(request: Request):
+    """Issue a same-origin CSRF token for the sign-in and sign-up forms."""
+    return {"csrf_token": _csrf_token(request)}
 
 
 @app.post("/api/auth/signup")
 async def signup(request: Request):
+    require_csrf(request)
     try:
         payload = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid signup request.")
     try:
-        user = auth.create_user(payload.get("display_name"), payload.get("email"), payload.get("password"))
+        user = auth.create_user(payload.get("full_name") or payload.get("display_name"), payload.get("email"), payload.get("password"))
     except auth.AuthError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except auth.AuthConfigurationError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     request.session.clear()
     request.session["user_id"] = user["id"]
-    return {"user": user}
+    return {"user": user, "csrf_token": _csrf_token(request)}
 
 
 @app.post("/api/auth/login")
 async def login(request: Request):
+    require_csrf(request)
     try:
         payload = await request.json()
     except Exception:
@@ -79,13 +150,14 @@ async def login(request: Request):
         raise HTTPException(status_code=503, detail=str(exc))
     request.session.clear()
     request.session["user_id"] = user["id"]
-    return {"user": user}
+    return {"user": user, "csrf_token": _csrf_token(request)}
 
 
 @app.post("/api/auth/logout")
 def logout(request: Request):
+    require_csrf(request)
     request.session.clear()
-    return {"ok": True}
+    return {"ok": True, "csrf_token": _csrf_token(request)}
 
 @app.get("/api/project-by-rae/{rae_id}")
 def project_by_rae(rae_id: str, request: Request):
@@ -102,6 +174,67 @@ def project_by_rae(rae_id: str, request: Request):
         raise HTTPException(status_code=404, detail="No project was found for this RAE ID.")
     return JSONResponse(result)
 
+
+@app.get("/api/standards")
+def standards(request: Request):
+    require_user(request)
+    try:
+        return {"standards": standards_library.list_standards()}
+    except standards_library.StandardsLibraryError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@app.get("/api/standards/{standard_id}/clauses")
+def standard_clauses(standard_id: int, request: Request):
+    require_user(request)
+    try:
+        return {"clauses": standards_library.list_clauses(standard_id)}
+    except standards_library.StandardsValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except standards_library.StandardsLibraryError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@app.post("/api/standards/manual")
+async def save_manual_standard(request: Request):
+    require_csrf(request)
+    require_user(request)
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid standards-library entry.")
+    try:
+        return standards_library.save_manual_entry(payload)
+    except standards_library.StandardsValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except standards_library.StandardsLibraryError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@app.get("/api/materials")
+def materials(request: Request):
+    require_user(request)
+    try:
+        return {"materials": materials_library.list_materials()}
+    except materials_library.MaterialsLibraryError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
+
+@app.post("/api/materials/manual")
+async def save_manual_material(request: Request):
+    require_csrf(request)
+    require_user(request)
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid material-library entry.")
+    try:
+        return {"material": materials_library.save_manual_material(payload)}
+    except materials_library.MaterialsValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except materials_library.MaterialsLibraryError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+
 @app.get("/api/template")
 def template(request: Request):
     require_user(request)
@@ -111,15 +244,14 @@ def template(request: Request):
 @app.get("/api/template/word")
 def template_word(request: Request):
     require_user(request)
-    word_path = os.path.join(HERE, "assets", "template_word.docx")
-    if not os.path.exists(word_path):
-        raise HTTPException(status_code=404, detail="Word template not found.")
-    with open(word_path, "rb") as f:
-        content = f.read()
+    # Generate this from the current report definition.  A checked-in DOCX
+    # becomes stale whenever template fields such as the standards table change.
+    content, _ = engine.build_word(template=True)
     return Response(content, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", headers={"Content-Disposition": 'attachment; filename="Trailer_Report_TEMPLATE.docx"'})
 
 @app.post("/api/generate")
 async def generate(request: Request):
+    require_csrf(request)
     require_user(request)
     form = await request.form()
     p = json.loads(form["payload"])
@@ -130,10 +262,14 @@ async def generate(request: Request):
             if b: images[k[5:]] = b
     output = p.get("output", "pdf")
     data, selected, layout = p.get("data", {}), p.get("selected"), p.get("layout", {})
+    if not isinstance(data, dict):
+        data = {}
+    standards = p.get("standards", [])
+    data["standards"] = standards if isinstance(standards, list) else []
     extras, removed = p.get("extra_images", {}), p.get("removed_images", [])
     stem = data.get("rae_no") or "Trailer"
     if output == "word":
-        content, warns = engine.build_word(data, images, selected, layout, extras, removed)
+        content, warns = engine.build_word(data, images, selected, layout=layout, extras=extras, removed=removed)
         name = stem + "_Certification_Report.docx"
         media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     else:

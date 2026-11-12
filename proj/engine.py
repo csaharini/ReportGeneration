@@ -76,7 +76,7 @@ for _i in range(10):
 SECTIONS = [
     dict(id="cert", title="Certificate of Conformity", fields=[], images=[]),
     dict(id="title", title="Title page & Structural Certification", fields=[], images=[]),
-    dict(id="summary", title="Summary of Compliance", fields=SUMMARY_ROW_FIELDS, images=[]),
+    dict(id="summary", title="Summary of Compliance", fields=[], images=[]),
     dict(id="background", title="Background", fields=[], images=[I("bg_front", "3D Isometric Model in Autodesk Inventor - Front", 80), I("bg_back", "3D Isometric Model in Autodesk Inventor - Back", 80)]),
     dict(id="geometry", title="The geometry of the Trailer",
          fields=[F("length_mm", "Overall length", "number", unit="mm"), F("width_mm", "Overall width", "number", unit="mm"),
@@ -235,6 +235,21 @@ class Ctx:
     def raw(self, k):
         v = str(self.d.get(k, "") if k in self.d else self.defs.get(k, "")).strip()
         return v
+    def standards(self):
+        """Return valid rows from the dynamic standards list submitted by the UI."""
+        items = self.d.get("standards", [])
+        if not isinstance(items, list):
+            return []
+        rows = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            standard = str(item.get("standard") or "").strip()
+            requirement = str(item.get("requirement") or "").strip()
+            conformity = str(item.get("conformity") or "Full Compliance").strip()
+            if standard or requirement:
+                rows.append(dict(standard=standard, requirement=requirement, conformity=conformity))
+        return rows
     def ph(self, label):
         return f'<font color="#999999"><i>[ {escape(label)} ]</i></font>'
     def v(self, k):
@@ -320,9 +335,17 @@ def sec_cert(c):
     t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "MIDDLE")])); out += [t, Spacer(1, 14 * mm)]
     out += [Paragraph(f'<font color="#1F3864" size="16"><b>RAE No: {c.v("rae_no")}</b></font>', ParagraphStyle("c", alignment=TA_CENTER, leading=20)), Spacer(1, 12 * mm)]
     b = lambda k, v: c.P(f"<b>{k}</b> {v}")
+    standards = c.standards()
+    if c.tpl:
+        standards_text = c.ph("Enter standards in Summary of Compliance")
+    elif standards:
+        standards_text = "<br/>".join(f"{i + 1}) <b>{escape(item['standard'])}</b>" for i, item in enumerate(standards) if item["standard"])
+        standards_text = standards_text or c.ph("Add standards in the report builder")
+    else:
+        standards_text = c.ph("Add standards in the report builder")
     out += [b("Name and address of Applicant:", c.v("applicant")), b("Project Name:", c.v("project_name")), b("Product Classification:", "Trailer Certification"),
             b("Certification was carried within following scope", ""), b("Australian Standards:", ""),
-            c.P("1) <b>ADR 62/02</b><br/>2) <b>AS4100-1998</b>"), Spacer(1, 6 * mm),
+            c.P(standards_text), Spacer(1, 6 * mm),
             c.P("The assessment process has been carried out in accordance with the individual rules and conditions agreed with the applicant."),
             b("Valid till: 5 Years From issue date (Yearly Inspection required)", ""), Spacer(1, 6 * mm)]
     out.append(c.tbl([[Paragraph(x, s["celb"]) for x in ["Revision", "Date", "Revision Details", "Prepared By"]],
@@ -332,10 +355,11 @@ def sec_cert(c):
     mid = c.P("<font size=10.5>Noel Singh<br/>Fellow IEAustCPEng RPEQ<br/>23862 NER</font>")
     if "qr" in c.removed:
         qr = Spacer(FW - 120 * mm, 22 * mm)
-    elif c.tpl:
-        qr = Slot(make_qr_png("https://csaengineering.com.au/verify", 22), "QR", 22)
     else:
-        qr = Slot(c.im.get("qr"), c.raw("cap__qr") or "QR", 22)
+        # The verification QR is a standard report element, not an optional
+        # upload. An uploaded QR may replace it, but previews and downloaded
+        # reports fall back to the same code used by the blank template.
+        qr = Slot(c.im.get("qr") or make_qr_png("https://csaengineering.com.au/verify", 22), c.raw("cap__qr") or "QR", 22)
     t = Table([[left, mid, qr]], colWidths=[58 * mm, 62 * mm, FW - 120 * mm]); t.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")]))
     return out + [t, PageBreak()]
 
@@ -357,20 +381,22 @@ ROWS = [("ADR 62/02 - 14.2.1.1.1<br/>Static Design Load", "Longitudinal Tension 
         ("AS4100-1998-R2016", "Coupling attachment points - Coupling plate bolt holes strength")]
 
 def sec_summary(c):
-    s = c.s; conf = escape(c.raw("conformity") or "Full Compliance")
+    s = c.s
     rows = [[Paragraph(x, s["celb"]) for x in ["No.", "Standard", "Compliance requirement", "Conformity"]]]
-    # Use user-supplied row data if provided; otherwise fall back to default ROWS
-    has_user_data = any(c.raw(f"summary_std_{i}") or c.raw(f"summary_req_{i}") for i in range(10))
-    if has_user_data:
-        for i in range(10):
-            std = escape(c.raw(f"summary_std_{i}") or "")
-            req = escape(c.raw(f"summary_req_{i}") or "")
-            cnf = escape(c.raw(f"summary_conf_{i}") or conf)
-            if std or req:
-                rows.append([Paragraph(str(i + 1), s["cell"]), Paragraph(std, s["cell"]), Paragraph(req, s["cell"]), Paragraph(cnf, s["cell"])])
+    standards = c.standards()
+    widths = [10 * mm, 38 * mm, FW - 10 * mm - 38 * mm - 30 * mm, 30 * mm]
+    if c.tpl:
+        for i in range(8):
+            rows.append([Paragraph(str(i + 1), s["cell"]), CellField(widths[1] - 4, f"standard_{i + 1}"), CellField(widths[2] - 4, f"requirement_{i + 1}"), CellField(widths[3] - 4, f"conformity_{i + 1}")])
+    elif standards:
+        for i, item in enumerate(standards):
+            std = escape(item["standard"]).replace("\n", "<br/>")
+            req = escape(item["requirement"]).replace("\n", "<br/>")
+            cnf = escape(item["conformity"])
+            rows.append([Paragraph(str(i + 1), s["cell"]), Paragraph(std, s["cell"]), Paragraph(req, s["cell"]), Paragraph(cnf, s["cell"])])
     else:
-        rows += [[Paragraph(str(i + 1), s["cell"]), Paragraph(a, s["cell"]), Paragraph(b, s["cell"]), Paragraph(conf, s["cell"])] for i, (a, b) in enumerate(ROWS)]
-    return [c.P("Summary of Compliance", "h1"), c.tbl(rows, [10 * mm, 38 * mm, FW - 10 * mm - 38 * mm - 30 * mm, 30 * mm]), PageBreak()]
+        rows.append([Paragraph("", s["cell"]), Paragraph(c.ph("add standards in the report builder"), s["cell"]), Paragraph("", s["cell"]), Paragraph("", s["cell"])])
+    return [c.P("Summary of Compliance", "h1"), c.tbl(rows, widths), PageBreak()]
 
 def sec_background(c):
     return [c.P("Background", "h1"),
@@ -397,8 +423,18 @@ REQ = ["ADR 62/02- Clause 14.2.1.1.1: Longitudinal Tension and Compression For T
        "Coupling mount check"]
 
 def sec_req(c):
-    return [c.P("Requirements", "h1"), c.P("The following requirements apply for the trailer structural compliance as per ADR 62/02,")] + \
-           [Paragraph(f"{i + 1}. {t}", c.s["li"]) for i, t in enumerate(REQ)] + [PageBreak()]
+    out = [c.P("Requirements", "h1"), c.P("The following requirements apply for the trailer structural compliance as selected in the Summary of Compliance.")]
+    standards = c.standards()
+    if c.tpl:
+        for i in range(8):
+            out.append(Table([[Paragraph(f"{i + 1}.", c.s["li"]), CellField(FW - 18 * mm, f"requirement_note_{i + 1}")]], colWidths=[14 * mm, FW - 14 * mm], style=TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP")])))
+    elif standards:
+        for i, item in enumerate(standards):
+            text = item["requirement"] or item["standard"]
+            out.append(Paragraph(f"{i + 1}. {escape(text).replace(chr(10), '<br/>')}", c.s["li"]))
+    else:
+        out.append(c.P(c.ph("Add standards in the Summary of Compliance section.")))
+    return out + [PageBreak()]
 
 def sec_pre(c):
     s = c.s
@@ -639,11 +675,10 @@ def build_word(data=None, images=None, selected=None, template=False, layout=Non
                 paragraph = doc.add_paragraph(line)
                 paragraph.alignment = text_align
 
-            # In template mode, insert the QR code image right after page 1
-            # (Certificate of Conformity section) to match the PDF layout exactly.
-            if template and page_no == 0:
-                qr_png = make_qr_png("https://csaengineering.com.au/verify", 22)
-                qr_buf = io.BytesIO(qr_png)
+            # Include the standard verification QR on the certificate page of
+            # every Word report, matching the PDF preview and blank template.
+            if page_no == 0 and "qr" not in removed:
+                qr_buf = io.BytesIO(images.get("qr") or make_qr_png("https://csaengineering.com.au/verify", 22))
                 qr_heading = doc.add_heading("QR / verification code", level=2)
                 qr_heading.alignment = caption_align
                 doc.add_picture(qr_buf, width=Mm(22), height=Mm(22))
@@ -806,7 +841,7 @@ def build_word_template(data, images, selected, layout, extras, removed):
 
     p_std = doc.add_paragraph()
     p_std.alignment = LEFT
-    r = p_std.add_run("1) ADR 62/02\n2) AS4100-1998")
+    r = p_std.add_run("Standards are entered in the Summary of Compliance section.")
     r.font.size = Pt(9.5)
 
     p_note = doc.add_paragraph()
@@ -876,6 +911,44 @@ def build_word_template(data, images, selected, layout, extras, removed):
     r = qr_head_p.add_run("QR / verification code")
     r.bold = True
     r.font.size = Pt(9)
+
+    # Keep the template editable: these rows are intentionally blank rather
+    # than copying historic requirements into every newly downloaded report.
+    doc.add_page_break()
+    heading = doc.add_heading("Summary of Compliance", level=1)
+    heading.alignment = LEFT
+    summary = doc.add_table(rows=1, cols=4)
+    summary.alignment = WD_TABLE_ALIGNMENT.CENTER
+    summary.autofit = False
+    summary_headers = ["No.", "Standard", "Compliance requirement", "Conformity"]
+    summary_widths = [Mm(10), Mm(38), Mm(89), Mm(30)]
+    for i, label in enumerate(summary_headers):
+        cell = summary.rows[0].cells[i]
+        cell.width = summary_widths[i]
+        set_cell_margins(cell)
+        set_cell_bg(cell, "95B3D7")
+        p = cell.paragraphs[0]
+        p.alignment = CENTER
+        run = p.add_run(label)
+        run.bold = True
+        run.font.size = Pt(9)
+    for number in range(1, 9):
+        row = summary.add_row()
+        values = [str(number), "", "", "Full Compliance"]
+        for i, value in enumerate(values):
+            cell = row.cells[i]
+            cell.width = summary_widths[i]
+            set_cell_margins(cell)
+            p = cell.paragraphs[0]
+            p.alignment = CENTER if i in (0, 3) else LEFT
+            p.add_run(value)
+
+    doc.add_page_break()
+    heading = doc.add_heading("Requirements", level=1)
+    heading.alignment = LEFT
+    doc.add_paragraph("The following requirements apply for the trailer structural compliance as selected in the Summary of Compliance.")
+    for number in range(1, 9):
+        doc.add_paragraph(f"{number}. ")
 
     out = io.BytesIO()
     doc.save(out)
