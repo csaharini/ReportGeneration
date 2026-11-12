@@ -17,6 +17,7 @@ from reportlab.lib.utils import ImageReader
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOGO = os.path.join(HERE, "assets", "logo.png")
 FATIGUE = os.path.join(HERE, "assets", "fatigue.png")
+AUSTRALIA_WATERMARK = os.path.join(HERE, "assets", "australia_silhouette.png")
 NAVY, BLUE, HEAD = colors.HexColor("#00205B"), colors.HexColor("#4F81BD"), colors.HexColor("#95B3D7")
 G = 9.81
 W, H = A4
@@ -177,6 +178,85 @@ def make_qr_png(text, size_mm):
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
+
+
+def first_page_watermark(canv, doc):
+    """Paint the supplied Australia silhouette behind certificate page content."""
+    if doc.page != 1 or not os.path.isfile(AUSTRALIA_WATERMARK):
+        return
+    canv.saveState()
+    try:
+        # Use a light alpha so the certificate's text, QR, and revision table
+        # remain readable over the silhouette.
+        canv.setFillAlpha(0.26)
+    except (AttributeError, NotImplementedError):
+        pass
+    canv.drawImage(
+        AUSTRALIA_WATERMARK,
+        23 * mm,
+        82 * mm,
+        176 * mm,
+        125 * mm,
+        preserveAspectRatio=True,
+        anchor="c",
+        mask="auto",
+    )
+    canv.restoreState()
+
+
+def add_word_first_page_watermark(doc, section):
+    """Add the silhouette as a behind-text watermark in Word's first-page header."""
+    if not os.path.isfile(AUSTRALIA_WATERMARK):
+        return
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Mm
+
+    section.different_first_page_header_footer = True
+    paragraph = section.first_page_header.paragraphs[0]
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    inline = paragraph.add_run().add_picture(AUSTRALIA_WATERMARK, width=Mm(176))._inline
+
+    # python-docx creates an inline image. Convert it to a page-anchored,
+    # behind-text DrawingML shape so it behaves as a real watermark.
+    anchor = OxmlElement("wp:anchor")
+    for name, value in {
+        "distT": "0", "distB": "0", "distL": "0", "distR": "0",
+        "simplePos": "0", "relativeHeight": "0", "behindDoc": "1",
+        "locked": "0", "layoutInCell": "1", "allowOverlap": "1",
+    }.items():
+        anchor.set(name, value)
+    simple_pos = OxmlElement("wp:simplePos")
+    simple_pos.set("x", "0")
+    simple_pos.set("y", "0")
+    position_h = OxmlElement("wp:positionH")
+    position_h.set("relativeFrom", "page")
+    pos_h_offset = OxmlElement("wp:posOffset")
+    pos_h_offset.text = str(17 * 36000)
+    position_h.append(pos_h_offset)
+    position_v = OxmlElement("wp:positionV")
+    position_v.set("relativeFrom", "page")
+    pos_v_offset = OxmlElement("wp:posOffset")
+    pos_v_offset.text = str(96 * 36000)
+    position_v.append(pos_v_offset)
+    effect_extent = OxmlElement("wp:effectExtent")
+    for name in ("l", "t", "r", "b"):
+        effect_extent.set(name, "0")
+    wrap_none = OxmlElement("wp:wrapNone")
+    children = {child.tag: child for child in inline}
+    anchor.extend([
+        simple_pos,
+        position_h,
+        position_v,
+        children[qn("wp:extent")],
+        effect_extent,
+        wrap_none,
+        children[qn("wp:docPr")],
+        children[qn("wp:cNvGraphicFramePr")],
+        children[qn("a:graphic")],
+    ])
+    inline.getparent().replace(inline, anchor)
 
 
 _n = [0]
@@ -601,7 +681,7 @@ def build(data=None, images=None, selected=None, template=False, layout=None, ex
     while story and isinstance(story[-1], PageBreak): story.pop()
     buf = io.BytesIO()
     doc = BaseDocTemplate(buf, pagesize=A4, title=c.raw("project_name") or "Trailer Certification Report", author="CSA Engineering")
-    doc.addPageTemplates([PageTemplate("p", frames=[Frame(FX, 20 * mm, FW, H - 20 * mm - 38 * mm, leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)])])
+    doc.addPageTemplates([PageTemplate("p", frames=[Frame(FX, 20 * mm, FW, H - 20 * mm - 38 * mm, leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)], onPage=first_page_watermark)])
     foot = f"{c.raw('rae_no') or 'RAE'} | {c.raw('report_title') or 'Trailer Certification Report'}"
     doc.build(story, canvasmaker=functools.partial(NumCanvas, meta={"footer": foot}))
     out = buf.getvalue()
@@ -638,6 +718,7 @@ def build_word(data=None, images=None, selected=None, template=False, layout=Non
     section.page_width, section.page_height = Mm(210), Mm(297)
     section.left_margin = section.right_margin = Mm(22)
     section.top_margin, section.bottom_margin = Mm(20), Mm(18)
+    add_word_first_page_watermark(doc, section)
     normal = doc.styles["Normal"]
     normal.font.name, normal.font.size = "Arial", Pt(9.5)
 
@@ -757,6 +838,7 @@ def build_word_template(data, images, selected, layout, extras, removed):
     section.page_width, section.page_height = Mm(210), Mm(297)
     section.left_margin, section.right_margin = Mm(22), Mm(22)
     section.top_margin, section.bottom_margin = Mm(20), Mm(18)
+    add_word_first_page_watermark(doc, section)
 
     normal = doc.styles["Normal"]
     normal.font.name = "Arial"
