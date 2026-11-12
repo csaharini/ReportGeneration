@@ -65,10 +65,18 @@ def analysis_images(n):
             I(f"a{n}_probe", "Stress Distribution Plot with the probe", 75),
             I(f"a{n}_disp", f"Displacement Plot for Analysis {n}", 75)]
 
+SUMMARY_ROW_FIELDS = [F("conformity", "Default Conformity", "select", "Full Compliance", ["Full Compliance", "Fully Compliance"])]
+for _i in range(10):
+    SUMMARY_ROW_FIELDS.extend([
+        F(f"summary_std_{_i}", f"Row {_i + 1} – Standard", "text"),
+        F(f"summary_req_{_i}", f"Row {_i + 1} – Compliance Requirement", "textarea"),
+        F(f"summary_conf_{_i}", f"Row {_i + 1} – Conformity", "select", "Full Compliance", ["Full Compliance", "Fully Compliance"]),
+    ])
+
 SECTIONS = [
     dict(id="cert", title="Certificate of Conformity", fields=[], images=[]),
     dict(id="title", title="Title page & Structural Certification", fields=[], images=[]),
-    dict(id="summary", title="Summary of Compliance", fields=[F("conformity", "Conformity wording", "select", "Full Compliance", ["Full Compliance", "Fully Compliance"])], images=[]),
+    dict(id="summary", title="Summary of Compliance", fields=SUMMARY_ROW_FIELDS, images=[]),
     dict(id="background", title="Background", fields=[], images=[I("bg_front", "3D Isometric Model in Autodesk Inventor - Front", 80), I("bg_back", "3D Isometric Model in Autodesk Inventor - Back", 80)]),
     dict(id="geometry", title="The geometry of the Trailer",
          fields=[F("length_mm", "Overall length", "number", unit="mm"), F("width_mm", "Overall width", "number", unit="mm"),
@@ -351,7 +359,17 @@ ROWS = [("ADR 62/02 - 14.2.1.1.1<br/>Static Design Load", "Longitudinal Tension 
 def sec_summary(c):
     s = c.s; conf = escape(c.raw("conformity") or "Full Compliance")
     rows = [[Paragraph(x, s["celb"]) for x in ["No.", "Standard", "Compliance requirement", "Conformity"]]]
-    rows += [[Paragraph(str(i + 1), s["cell"]), Paragraph(a, s["cell"]), Paragraph(b, s["cell"]), Paragraph(conf, s["cell"])] for i, (a, b) in enumerate(ROWS)]
+    # Use user-supplied row data if provided; otherwise fall back to default ROWS
+    has_user_data = any(c.raw(f"summary_std_{i}") or c.raw(f"summary_req_{i}") for i in range(10))
+    if has_user_data:
+        for i in range(10):
+            std = escape(c.raw(f"summary_std_{i}") or "")
+            req = escape(c.raw(f"summary_req_{i}") or "")
+            cnf = escape(c.raw(f"summary_conf_{i}") or conf)
+            if std or req:
+                rows.append([Paragraph(str(i + 1), s["cell"]), Paragraph(std, s["cell"]), Paragraph(req, s["cell"]), Paragraph(cnf, s["cell"])])
+    else:
+        rows += [[Paragraph(str(i + 1), s["cell"]), Paragraph(a, s["cell"]), Paragraph(b, s["cell"]), Paragraph(conf, s["cell"])] for i, (a, b) in enumerate(ROWS)]
     return [c.P("Summary of Compliance", "h1"), c.tbl(rows, [10 * mm, 38 * mm, FW - 10 * mm - 38 * mm - 30 * mm, 30 * mm]), PageBreak()]
 
 def sec_background(c):
@@ -557,7 +575,7 @@ def build(data=None, images=None, selected=None, template=False, layout=None, ex
     return out, c.warn
 
 
-def build_word(data=None, images=None, selected=None, layout=None, extras=None, removed=None):
+def build_word(data=None, images=None, selected=None, template=False, layout=None, extras=None, removed=None):
     """Create a .docx companion report from the same generated report data.
 
     The PDF remains the controlled-layout version.  The Word version retains the
@@ -573,7 +591,12 @@ def build_word(data=None, images=None, selected=None, layout=None, extras=None, 
 
     data, images, layout = data or {}, images or {}, layout or {}
     extras, removed = extras or {}, set(removed or [])
-    pdf, warns = build(data, images, selected, layout=layout, extras=extras, removed=removed)
+
+    # When in template mode, build from scratch to match PDF layout exactly
+    if template:
+        return build_word_template(data, images, selected, layout, extras, removed)
+
+    pdf, warns = build(data, images, selected, template=template, layout=layout, extras=extras, removed=removed)
     doc = Document()
     section = doc.sections[0]
     section.page_width, section.page_height = Mm(210), Mm(297)
@@ -615,6 +638,18 @@ def build_word(data=None, images=None, selected=None, layout=None, extras=None, 
                     continue
                 paragraph = doc.add_paragraph(line)
                 paragraph.alignment = text_align
+
+            # In template mode, insert the QR code image right after page 1
+            # (Certificate of Conformity section) to match the PDF layout exactly.
+            if template and page_no == 0:
+                qr_png = make_qr_png("https://csaengineering.com.au/verify", 22)
+                qr_buf = io.BytesIO(qr_png)
+                qr_heading = doc.add_heading("QR / verification code", level=2)
+                qr_heading.alignment = caption_align
+                doc.add_picture(qr_buf, width=Mm(22), height=Mm(22))
+                qr_para = doc.paragraphs[-1]
+                qr_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
     except Exception as exc:
         warns.append(f"Word text extraction could not complete: {exc}")
 
@@ -671,3 +706,177 @@ def build_word(data=None, images=None, selected=None, layout=None, extras=None, 
     output = io.BytesIO()
     doc.save(output)
     return output.getvalue(), warns
+
+
+def build_word_template(data, images, selected, layout, extras, removed):
+    """Build a blank Word template matching the PDF template layout exactly."""
+    from docx import Document
+    from docx.enum.table import WD_TABLE_ALIGNMENT
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Mm, Pt, RGBColor
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    doc = Document()
+    section = doc.sections[0]
+    section.page_width, section.page_height = Mm(210), Mm(297)
+    section.left_margin, section.right_margin = Mm(22), Mm(22)
+    section.top_margin, section.bottom_margin = Mm(20), Mm(18)
+
+    normal = doc.styles["Normal"]
+    normal.font.name = "Arial"
+    normal.font.size = Pt(9.5)
+
+    CENTER = WD_ALIGN_PARAGRAPH.CENTER
+    LEFT = WD_ALIGN_PARAGRAPH.LEFT
+    NAVY = RGBColor(0x1F, 0x38, 0x64)
+    WHITE = RGBColor(0xFF, 0xFF, 0xFF)
+
+    def set_cell_bg(cell, color_hex):
+        tcPr = cell._tc.get_or_add_tcPr()
+        shd = OxmlElement("w:shd")
+        shd.set(qn("w:val"), "clear")
+        shd.set(qn("w:color"), "auto")
+        shd.set(qn("w:fill"), color_hex)
+        tcPr.append(shd)
+
+    def set_cell_margins(cell, top=40, bottom=40, left=80, right=80):
+        tcPr = cell._tc.get_or_add_tcPr()
+        tcMar = OxmlElement("w:tcMar")
+        for m, v in (("top", top), ("bottom", bottom), ("start", left), ("end", right), ("left", left), ("right", right)):
+            node = OxmlElement(f"w:{m}")
+            node.set(qn("w:w"), str(v))
+            node.set(qn("w:type"), "dxa")
+            tcMar.append(node)
+        tcPr.append(tcMar)
+
+    # ---------- 1. Logo + CERTIFICATE OF CONFORMITY heading table ----------
+    t = doc.add_table(rows=1, cols=2)
+    t.alignment = WD_TABLE_ALIGNMENT.CENTER
+    t.autofit = False
+    for row in t.rows:
+        row.cells[0].width = Mm(40)
+        row.cells[1].width = Mm(127)
+
+    cell0 = t.rows[0].cells[0]
+    set_cell_margins(cell0)
+    p0 = cell0.paragraphs[0]
+    p0.alignment = CENTER
+    logo_path = os.path.join(HERE, "assets", "logo.png")
+    if os.path.exists(logo_path):
+        r0 = p0.add_run()
+        r0.add_picture(logo_path, width=Mm(22), height=Mm(22))
+
+    cell1 = t.rows[0].cells[1]
+    set_cell_margins(cell1)
+    p1 = cell1.paragraphs[0]
+    p1.alignment = CENTER
+    run = p1.add_run("CERTIFICATE OF CONFORMITY")
+    run.bold = True
+    run.font.size = Pt(16)
+    run.font.color.rgb = NAVY
+
+    # ---------- 2. Spacer ----------
+    doc.add_paragraph()
+
+    # ---------- 3. RAE No (centered) ----------
+    p_rae = doc.add_paragraph()
+    p_rae.alignment = CENTER
+    run = p_rae.add_run("RAE No: ")
+    run.bold = True
+    run.font.size = Pt(16)
+    run.font.color.rgb = NAVY
+    run2 = p_rae.add_run(data.get("rae_no") or "")
+    run2.font.size = Pt(16)
+
+    # ---------- 4. Applicant / project info (key-value pairs) ----------
+    def kv(label, value):
+        p = doc.add_paragraph()
+        p.alignment = LEFT
+        r1 = p.add_run(f"{label} ")
+        r1.bold = True
+        r2 = p.add_run(value or "")
+        return p
+
+    kv("Name and address of Applicant:", data.get("applicant", ""))
+    kv("Project Name:", data.get("project_name", ""))
+    kv("Product Classification:", "Trailer Certification")
+    kv("Certification was carried within following scope", "")
+    kv("Australian Standards:", "")
+
+    p_std = doc.add_paragraph()
+    p_std.alignment = LEFT
+    r = p_std.add_run("1) ADR 62/02\n2) AS4100-1998")
+    r.font.size = Pt(9.5)
+
+    p_note = doc.add_paragraph()
+    p_note.alignment = LEFT
+    r = p_note.add_run("The assessment process has been carried out in accordance with the individual rules and conditions agreed with the applicant.")
+    r.font.size = Pt(9.5)
+
+    kv("Valid till: 5 Years From issue date (Yearly Inspection required)", "")
+
+    # ---------- 5. Revision table ----------
+    rev_t = doc.add_table(rows=1, cols=4)
+    rev_t.alignment = WD_TABLE_ALIGNMENT.CENTER
+    rev_t.autofit = False
+    headers = ["Revision", "Date", "Revision Details", "Prepared By"]
+    for i, h in enumerate(headers):
+        cell = rev_t.rows[0].cells[i]
+        set_cell_margins(cell)
+        set_cell_bg(cell, "95B3D7")
+        p = cell.paragraphs[0]
+        p.alignment = CENTER
+        run = p.add_run(h)
+        run.bold = True
+        run.font.size = Pt(9)
+        run.font.color.rgb = WHITE
+
+    row = rev_t.add_row()
+    for i in range(4):
+        cell = row.cells[i]
+        set_cell_margins(cell)
+        cell.paragraphs[0].add_run("")
+
+    # ---------- 6. 3-column table: CSA Engineering | Noel Singh | QR code ----------
+    qr_png = make_qr_png("https://csaengineering.com.au/verify", 22)
+    qr_buf = io.BytesIO(qr_png)
+
+    info_t = doc.add_table(rows=1, cols=3)
+    info_t.alignment = WD_TABLE_ALIGNMENT.CENTER
+    info_t.autofit = False
+    for row in info_t.rows:
+        row.cells[0].width = Mm(58)
+        row.cells[1].width = Mm(62)
+        row.cells[2].width = Mm(47)
+
+    c1 = info_t.rows[0].cells[0]
+    set_cell_margins(c1)
+    p = c1.paragraphs[0]
+    p.alignment = LEFT
+    r = p.add_run("CSA Engineering\nwww.csaengineering.com.au\ninfo@csaengineering.com.au\n8/8 Christensen Road, Stapylton Qld 4207.\nP: 0452 292 355")
+    r.font.size = Pt(9)
+
+    c2 = info_t.rows[0].cells[1]
+    set_cell_margins(c2)
+    p = c2.paragraphs[0]
+    p.alignment = LEFT
+    r = p.add_run("Noel Singh\nFellow IEAustCPEng RPEQ\n23862 NER")
+    r.font.size = Pt(9)
+
+    c3 = info_t.rows[0].cells[2]
+    set_cell_margins(c3, top=0, bottom=0)
+    p = c3.paragraphs[0]
+    p.alignment = CENTER
+    run = p.add_run()
+    run.add_picture(qr_buf, width=Mm(22), height=Mm(22))
+
+    qr_head_p = doc.add_paragraph()
+    qr_head_p.alignment = CENTER
+    r = qr_head_p.add_run("QR / verification code")
+    r.bold = True
+    r.font.size = Pt(9)
+
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue(), []

@@ -8,6 +8,8 @@ import engine
 import project_lookup
 import auth
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+
 app = FastAPI(title="Trailer Certification Report Generator")
 app.add_middleware(
     SessionMiddleware,
@@ -105,6 +107,16 @@ def template(request: Request):
     require_user(request)
     pdf, _ = engine.build(template=True)
     return Response(pdf, media_type="application/pdf", headers={"Content-Disposition": 'attachment; filename="Trailer_Report_TEMPLATE.pdf"'})
+
+@app.get("/api/template/word")
+def template_word(request: Request):
+    require_user(request)
+    word_path = os.path.join(HERE, "assets", "template_word.docx")
+    if not os.path.exists(word_path):
+        raise HTTPException(status_code=404, detail="Word template not found.")
+    with open(word_path, "rb") as f:
+        content = f.read()
+    return Response(content, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document", headers={"Content-Disposition": 'attachment; filename="Trailer_Report_TEMPLATE.docx"'})
 
 @app.post("/api/generate")
 async def generate(request: Request):
