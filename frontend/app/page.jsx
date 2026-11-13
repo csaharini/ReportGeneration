@@ -694,6 +694,13 @@ function SectionEditor({ section, sections, data, setData, files, setFiles, extr
   );
 }
 
+const initials = (name) => {
+  const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+};
+
 /* ------------------------------------------------------------------ */
 /*  App                                                                */
 /* ------------------------------------------------------------------ */
@@ -715,6 +722,7 @@ export default function ReportGenix() {
   const [selected, setSelected] = useState([]);
   const [files, setFiles] = useState({});
   const [layout, setLayout] = useState({ heading_align: "left", text_align: "justify", image_align: "center", caption_position: "below", caption_align: "center" });
+  const [sectionsDropdown, setSectionsDropdown] = useState("");
   const [materialMode, setMaterialMode] = useState("library");
   const [selectedMaterialId, setSelectedMaterialId] = useState("");
   const [materialMeta, setMaterialMeta] = useState({ material_type: "", category: "steel", source_standard_id: "", notes: "" });
@@ -725,6 +733,14 @@ export default function ReportGenix() {
   const [previewUrl, setPreviewUrl] = useState("");
   const [busy, setBusy] = useState("");
   const [raeLookup, setRaeLookup] = useState({ status: "idle", message: "", matchType: null });
+  const [profileModal, setProfileModal] = useState(false);
+  const [profileForm, setProfileForm] = useState({ full_name: "", email: "", current_password: "", initials: "" });
+  const [resetForm, setResetForm] = useState({ current_password: "", new_password: "" });
+  const [profileStatus, setProfileStatus] = useState("");
+  const [profileBusy, setProfileBusy] = useState("");
+  const [resetMode, setResetMode] = useState(false);
+  const [passwordVisible, setPasswordVisible] = useState(false);
+  const [avatarPreview, setAvatarPreview] = useState(null);
   const raeTimer = useRef(null);
 
   const request = useCallback(
@@ -732,7 +748,7 @@ export default function ReportGenix() {
       const method = (options.method || "GET").toUpperCase();
       const headers = new Headers(options.headers || {});
       if (method !== "GET" && method !== "HEAD" && csrf) headers.set("X-CSRF-Token", csrf);
-      const response = await fetch(path, { ...options, headers, cache: options.cache || "no-store" });
+      const response = await fetch(path, { ...options, headers, cache: options.cache || "no-store", credentials: "include" });
       if (!response.ok) throw new Error(await messageFor(response));
       return response;
     },
@@ -769,14 +785,17 @@ export default function ReportGenix() {
     let active = true;
     (async () => {
       try {
-        const csrfResponse = await fetch("/api/auth/csrf", { cache: "no-store" });
+        const csrfResponse = await fetch("/api/auth/csrf", { cache: "no-store", credentials: "include" });
         const csrfPayload = await csrfResponse.json();
         if (!active) return;
         setCsrf(csrfPayload.csrf_token || "");
-        const meResponse = await fetch("/api/auth/me", { cache: "no-store" });
+        const meResponse = await fetch("/api/auth/me", { cache: "no-store", credentials: "include" });
         if (meResponse.ok) {
           const mePayload = await meResponse.json();
           setUser(mePayload.user);
+          if (mePayload.user.initials) {
+            setData((current) => ({ ...current, prepared_by: mePayload.user.initials }));
+          }
           setCsrf(mePayload.csrf_token || csrfPayload.csrf_token || "");
         }
       } catch (error) {
@@ -813,7 +832,13 @@ export default function ReportGenix() {
   }, [request]);
 
   useEffect(() => {
-    if (user && csrf) loadStudio().catch((error) => setAuthStatus(error.message));
+    if (user && csrf) {
+      loadStudio().then(() => {
+        if (user.initials) {
+          setData((current) => ({ ...current, prepared_by: user.initials }));
+        }
+      }).catch((error) => setAuthStatus(error.message));
+    }
   }, [user, csrf, loadStudio]);
 
   useEffect(() => {
@@ -878,12 +903,116 @@ export default function ReportGenix() {
       });
       const payload = await response.json();
       setUser(payload.user);
+      if (payload.user.initials) {
+        setData((current) => ({ ...current, prepared_by: payload.user.initials }));
+      }
       setCsrf(payload.csrf_token || csrf);
       setAuthForm((form) => ({ ...form, password: "" }));
     } catch (error) {
       setAuthStatus(error.message);
     } finally {
       setBusy("");
+    }
+  };
+
+  const openProfile = () => {
+    setProfileForm({ full_name: user.full_name || "", email: user.email || "", current_password: "", initials: user.initials || "" });
+    setResetForm({ current_password: "", new_password: "" });
+    setAvatarPreview(user.avatar_url || null);
+    setProfileStatus("");
+    setResetMode(false);
+    setPasswordVisible(false);
+    setProfileModal(true);
+  };
+
+  const closeProfile = () => {
+    setProfileModal(false);
+    setProfileStatus("");
+    setProfileForm({ full_name: "", email: "", current_password: "", initials: "" });
+    setResetForm({ current_password: "", new_password: "" });
+    setAvatarPreview(null);
+    setResetMode(false);
+    setPasswordVisible(false);
+  };
+
+  const updateProfile = async () => {
+    setProfileBusy("save");
+    setProfileStatus("");
+    try {
+      const payload = {};
+      if (profileForm.full_name) payload.full_name = profileForm.full_name;
+      if (profileForm.email) payload.email = profileForm.email;
+      if (profileForm.initials) payload.initials = profileForm.initials;
+      if (Object.keys(payload).length === 0) {
+        setProfileStatus("Nothing to change.");
+        setProfileBusy("");
+        return;
+      }
+      const response = await request("/api/auth/profile", { method: "PUT", body: JSON.stringify(payload) });
+      const result = await response.json();
+      setUser(result.user);
+      if (result.user.initials) {
+        setData((current) => ({ ...current, prepared_by: result.user.initials }));
+      }
+      setCsrf(result.csrf_token || csrf);
+      setProfileModal(false);
+      setProfileStatus("Profile saved.");
+    } catch (error) {
+      setProfileStatus(error.message || "Profile update failed.");
+    } finally {
+      setProfileBusy("");
+    }
+  };
+
+  const uploadAvatar = async (file) => {
+    setProfileBusy("save");
+    setProfileStatus("");
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      const response = await fetch("/api/auth/avatar", {
+        method: "POST",
+        headers: { "X-CSRF-Token": csrf },
+        body: form,
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const result = await response.json();
+      setUser(result.user);
+      if (result.user.initials) {
+        setData((current) => ({ ...current, prepared_by: result.user.initials }));
+      }
+      setCsrf(result.csrf_token || csrf);
+      setAvatarPreview(result.user.avatar_url || null);
+      setProfileStatus("Avatar uploaded.");
+    } catch (error) {
+      setProfileStatus(error.message || "Avatar upload failed.");
+    } finally {
+      setProfileBusy("");
+    }
+  };
+
+  const doResetPassword = async () => {
+    setProfileBusy("save");
+    setProfileStatus("");
+    try {
+      const response = await request("/api/auth/reset-password", {
+        method: "POST",
+        body: JSON.stringify({ current_password: resetForm.current_password, new_password: resetForm.new_password }),
+      });
+      const result = await response.json();
+      setUser(result.user);
+      if (result.user.initials) {
+        setData((current) => ({ ...current, prepared_by: result.user.initials }));
+      }
+      setCsrf(result.csrf_token || csrf);
+      setResetMode(false);
+      setResetForm({ current_password: "", new_password: "" });
+      setProfileStatus("Password changed.");
+    } catch (error) {
+      setProfileStatus(error.message || "Password reset failed.");
+    } finally {
+      setProfileBusy("");
     }
   };
 
@@ -1008,19 +1137,13 @@ export default function ReportGenix() {
     );
   }
 
-  const generalFields = schema.general.filter((field) => !MATERIAL_IDS.has(field.id) && field.id !== "rae_no");
+  const generalFields = schema.general.filter((field) => !MATERIAL_IDS.has(field.id) && field.id !== "rae_no" && field.id !== "prepared_by");
   const raeField = schema.general.find((field) => field.id === "rae_no");
+  const preparedByField = schema.general.find((field) => field.id === "prepared_by");
   const sectionId = pathname.startsWith("/section/") ? decodeURIComponent(pathname.slice("/section/".length)) : "";
   const activeSection = schema.sections.find((section) => section.id === sectionId);
-  const route = pathname === "/" ? "home" : pathname === "/projects" ? "projects" : pathname === "/layout" ? "layout" : pathname === "/issue" ? "issue" : activeSection ? "section" : "not-found";
+  const route = pathname === "/" ? "home" : pathname === "/projects" ? "projects" : pathname === "/issue" ? "issue" : activeSection ? "section" : "not-found";
   const reportSections = schema.sections.filter((section) => section.id !== "summary");
-  const layoutOptions = [
-    ["heading_align", "Heading alignment", ["left", "center", "right"]],
-    ["text_align", "Body alignment", ["justify", "left", "center", "right"]],
-    ["image_align", "Image alignment", ["center", "left", "right"]],
-    ["caption_position", "Caption placement", ["below", "above"]],
-    ["caption_align", "Caption alignment", ["center", "left", "right"]],
-  ];
   const navClass = (active) => `rounded-md px-3 py-2 text-sm font-medium transition ${active ? "bg-[#f84f63] text-[#0a1f36]" : "text-[#c6dce2] hover:bg-white/5 hover:text-white"}`;
 
   return (
@@ -1031,12 +1154,35 @@ export default function ReportGenix() {
           <nav className="ml-2 hidden items-center gap-1 lg:flex" aria-label="Workspace navigation">
             <Link href="/" className={navClass(route === "home")}>Project</Link>
             <Link href="/projects" className={navClass(route === "projects")}>Libraries</Link>
-            <details className="relative"><summary className={`${navClass(route === "section")} list-none cursor-pointer`}>Sections</summary><div className="absolute left-0 top-10 z-40 grid w-72 gap-1 rounded-xl border border-[#2f5b75] bg-[#0e3250] p-2 shadow-2xl">{reportSections.map((section) => <Link key={section.id} href={`/section/${section.id}`} className="rounded-lg px-3 py-2 text-sm text-[#c8dfe1] hover:bg-[#16415f] hover:text-white">{section.title}</Link>)}</div></details>
-            <Link href="/layout" className={navClass(route === "layout")}>Layout</Link>
+            <select
+              value={sectionsDropdown}
+              onChange={(e) => {
+                const id = e.target.value;
+                if (id) router.push(`/section/${id}`);
+                setSectionsDropdown("");
+              }}
+              className={`rounded-md border border-[#2f5b75] bg-[#0a2744] px-3 py-1.5 text-sm text-[#c8dfe1] focus:outline-none focus:border-[#f84f63] ${route === "section" ? "border-[#f84f63] text-white" : ""}`}
+            >
+              <option value="" disabled className="text-[#6b7c86]">Sections</option>
+              {reportSections.map((section) => (
+                <option key={section.id} value={section.id}>{section.title}</option>
+              ))}
+            </select>
             <Link href="/issue" className={navClass(route === "issue")}>Issue</Link>
           </nav>
           <div className="ml-auto flex items-center gap-2">
             <span className="hidden max-w-[220px] truncate text-sm text-[#b9d2d3] md:inline">{user.full_name || user.email}</span>
+            <button
+              onClick={openProfile}
+              className="relative rounded-full border border-[#2f5b75] bg-[#0e3250] px-2 py-1 text-xs font-semibold text-[#c8dfe1] hover:bg-white/10 focus:outline-none focus:border-[#f84f63]"
+              aria-label="Profile"
+            >
+              {user.avatar_url ? (
+                <img src={user.avatar_url} alt="Profile" className="rounded-full w-6 h-6 object-cover" />
+              ) : (
+                <span className="flex items-center justify-center w-6 h-6 rounded-full bg-[#f84f63] text-[#0a1f36] font-bold text-xs">{user.initials || initials(user.full_name || user.email)}</span>
+              )}
+            </button>
             <ActionButton variant="ghost" onClick={() => downloadTemplate("pdf")} className="hidden !px-4 !py-2 sm:inline-flex">Blank PDF</ActionButton>
             <ActionButton variant="ghost" onClick={logout} className="!px-4 !py-2">Sign out</ActionButton>
           </div>
@@ -1044,7 +1190,7 @@ export default function ReportGenix() {
       </header>
 
       <div className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6 sm:py-8 lg:px-10">
-        <div className="mb-6 flex flex-col justify-between gap-4 rounded-2xl border border-[#2a5068] bg-[#0e3250] px-5 py-5 sm:flex-row sm:items-center sm:px-7"><div><p className={EYEBROW}>{route === "home" ? "Project information" : route === "projects" ? "Project libraries" : route === "section" ? "Report section" : route === "layout" ? "Document configuration" : "Report issue"}</p><h1 className="mt-1 text-2xl font-semibold text-white">{route === "home" ? "Report details" : route === "projects" ? "Materials & compliance" : route === "section" ? (data[`heading__${activeSection.id}`] || activeSection.title) : route === "layout" ? "Layout controls" : "Review and export"}</h1></div><div className="flex flex-wrap gap-2 lg:hidden"><Link href="/" className={navClass(route === "home")}>Project</Link><Link href="/projects" className={navClass(route === "projects")}>Libraries</Link><Link href="/issue" className={navClass(route === "issue")}>Issue</Link></div></div>
+        <div className="mb-6 flex flex-col justify-between gap-4 rounded-2xl border border-[#2a5068] bg-[#0e3250] px-5 py-5 sm:flex-row sm:items-center sm:px-7"><div><p className={EYEBROW}>{route === "home" ? "Project information" : route === "projects" ? "Project libraries" : route === "section" ? "Report section" : "Report issue"}</p><h1 className="mt-1 text-2xl font-semibold text-white">{route === "home" ? "Report details" : route === "projects" ? "Materials & compliance" : route === "section" ? (data[`heading__${activeSection.id}`] || activeSection.title) : "Review and export"}</h1></div><div className="flex flex-wrap gap-2 lg:hidden"><Link href="/" className={navClass(route === "home")}>Project</Link><Link href="/projects" className={navClass(route === "projects")}>Libraries</Link><Link href="/issue" className={navClass(route === "issue")}>Issue</Link></div></div>
 
         {route === "home" && (
           <section className={CARD}>
@@ -1072,6 +1218,19 @@ export default function ReportGenix() {
                   </Labeled>
                 </div>
               )}
+              {preparedByField && (
+                <div className="xl:col-span-3">
+                  <Labeled label={preparedByField.label + (preparedByField.unit ? " (" + preparedByField.unit + ")" : "")}>
+                    <input
+                      className="w-full rounded border border-[#2f5b75] bg-[#0a2744]/50 px-3 py-2 text-sm text-[#8fbcc0] focus:outline-none cursor-not-allowed"
+                      type="text"
+                      value={data.prepared_by ?? user.initials ?? ""}
+                      readOnly
+                    />
+                    <span className="text-xs text-[#6b7c86]">Auto-filled from your profile initials</span>
+                  </Labeled>
+                </div>
+              )}
               {generalFields.map((field) => (
                 <Field key={field.id} field={field} value={data[field.id]} onChange={(value) => setData((current) => ({ ...current, [field.id]: value }))} />
               ))}
@@ -1082,22 +1241,6 @@ export default function ReportGenix() {
         {route === "projects" && <div className="space-y-6"><MaterialEditor catalog={materialsCatalog} mode={materialMode} setMode={setMaterialMode} selectedId={selectedMaterialId} setSelectedId={setSelectedMaterialId} data={data} setData={setData} materialMeta={materialMeta} setMaterialMeta={setMaterialMeta} status={materialStatus} /><ComplianceEditor rows={standards} setRows={setStandards} catalog={standardsCatalog} request={request} /></div>}
 
         {route === "section" && <SectionEditor sections={schema.sections} section={activeSection} data={data} setData={setData} files={files} setFiles={setFiles} extraImages={extraImages} setExtraImages={setExtraImages} removedSchemaImages={removedSchemaImages} setRemovedSchemaImages={setRemovedSchemaImages} selected={selected} setSelected={setSelected}>{activeSection.id === "requirements" && <p className="text-sm text-[#b7d1d2]">Requirements are generated from the Summary of Compliance entries in <Link href="/projects" className="font-semibold text-[#81c9c2] underline">Project libraries</Link>.</p>}{activeSection.id === "cert" && <p className="text-sm text-[#b7d1d2]">The certificate QR code and Australia watermark are applied automatically in preview and final documents.</p>}</SectionEditor>}
-
-        {route === "layout" && (
-          <section className={CARD}>
-            <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {layoutOptions.map(([key, label, options]) => (
-                <Labeled key={key} label={label}>
-                  <select className={INPUT} value={layout[key]} onChange={(e) => setLayout((current) => ({ ...current, [key]: e.target.value }))}>
-                    {options.map((option) => (
-                      <option key={option}>{option}</option>
-                    ))}
-                  </select>
-                </Labeled>
-              ))}
-            </div>
-          </section>
-        )}
 
         {route === "issue" && (
           <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
@@ -1144,7 +1287,7 @@ export default function ReportGenix() {
           <div className="flex flex-wrap justify-between items-center gap-4">
             <div className="text-xs text-[#6b7c86] uppercase tracking-wider font-medium">Stage navigation</div>
             <div className="flex items-center gap-3 text-sm text-[#b9d2d3]">
-              <span className="text-[#6b7c86]">{route === "home" ? "1" : route === "projects" ? "2" : route === "section" ? "3" : route === "layout" ? "4" : "5"} / 5</span>
+              <span className="text-[#6b7c86]">{route === "home" ? "1" : route === "projects" ? "2" : route === "section" ? "3" : "4"} / 4</span>
             </div>
             <div className="flex gap-3">
               <button
@@ -1154,8 +1297,7 @@ export default function ReportGenix() {
                   else if (route === "section") {
                     const idx = schema.sections.findIndex((s) => s.id === activeSection.id);
                     router.push(idx > 0 ? `/section/${schema.sections[idx - 1].id}` : "/projects");
-                  } else if (route === "layout") router.push("/section/" + (schema.sections.find((s) => s.id === "cert")?.id || schema.sections[0]?.id || ""));
-                  else if (route === "issue") router.push("/layout");
+                  } else if (route === "issue") router.push("/section/" + (schema.sections.find((s) => s.id === "cert")?.id || schema.sections[0]?.id || ""));
                 }}
                 className="rounded-md px-4 py-2 text-sm font-semibold border border-[#2f5b75] bg-transparent text-[#b9d2d3] hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"
               >
@@ -1166,13 +1308,12 @@ export default function ReportGenix() {
                   if (route === "home") router.push("/projects");
                   else if (route === "projects") {
                     const firstSection = schema.sections[0];
-                    router.push(firstSection ? `/section/${firstSection.id}` : "/layout");
+                    router.push(firstSection ? `/section/${firstSection.id}` : "/issue");
                   }
                   else if (route === "section") {
                     const idx = schema.sections.findIndex((s) => s.id === activeSection.id);
-                    router.push(idx < schema.sections.length - 1 ? `/section/${schema.sections[idx + 1].id}` : "/layout");
-                  } else if (route === "layout") router.push("/issue");
-                  else if (route === "issue") router.push("/issue");
+                    router.push(idx < schema.sections.length - 1 ? `/section/${schema.sections[idx + 1].id}` : "/issue");
+                  } else if (route === "issue") router.push("/issue");
                 }}
                 className="rounded-md px-4 py-2 text-sm font-semibold border border-[#f84f63] bg-[#f84f63] text-[#0a1f36] hover:bg-[#ff667a] disabled:opacity-30 disabled:cursor-not-allowed"
               >
@@ -1182,6 +1323,194 @@ export default function ReportGenix() {
           </div>
         </div>
       </div>
+      {profileModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="absolute inset-0 bg-[#0a1f36]/60 backdrop-blur-sm" onClick={closeProfile} />
+          <div className="relative bg-[#0b2b47] border border-[#2a5068] rounded-2xl p-6 w-full max-w-md mx-4 shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-white">Manage Profile</h3>
+              <button onClick={closeProfile} className="rounded-full border border-[#2f5b75] bg-transparent px-2 py-1 text-xs text-[#c8dfe1] hover:bg-white/5">&times;</button>
+            </div>
+            {profileStatus && (
+              <p className={`mb-3 text-sm ${profileStatus === "Profile saved." || profileStatus === "Password changed." ? "text-[#6fd08a]" : "text-[#ff8e9c]"}`}>{profileStatus}</p>
+            )}
+            {resetMode ? (
+              <form onChange={() => setProfileStatus("")} onSubmit={(e) => { e.preventDefault(); doResetPassword(); }}>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs text-[#8fbcc0] mb-1">Forgot password — authenticate</label>
+                    <p className="mb-2 text-xs text-[#8fbcc0]">Enter your current password to verify, then set a new password.</p>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-[#8fbcc0] mb-1">Current password</label>
+                    <div className="relative">
+                      <input
+                        className="w-full rounded border border-[#2f5b75] bg-[#0a2744] px-3 py-2 text-sm text-white pr-10 focus:outline-none focus:border-[#f84f63]"
+                        type={passwordVisible ? "text" : "password"}
+                        value={resetForm.current_password}
+                        onChange={(e) => setResetForm((current) => ({ ...current, current_password: e.target.value }))}
+                        placeholder="Current password"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setPasswordVisible((v) => !v)}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded border border-[#2f5b75] bg-transparent px-1 py-0 text-[10px] text-[#8fbcc0] hover:text-[#c8dfe1]"
+                        aria-label="Toggle password visibility"
+                      >
+                        {passwordVisible ? "🙈" : "👁"}
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-[#8fbcc0] mb-1">New password</label>
+                    <div className="relative">
+                      <input
+                        className="w-full rounded border border-[#2f5b75] bg-[#0a2744] px-3 py-2 text-sm text-white pr-10 focus:outline-none focus:border-[#f84f63]"
+                        type={passwordVisible ? "text" : "password"}
+                        value={resetForm.new_password}
+                        onChange={(e) => setResetForm((current) => ({ ...current, new_password: e.target.value }))}
+                        placeholder="New password (min 8 chars)"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setPasswordVisible((v) => !v)}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 rounded border border-[#2f5b75] bg-transparent px-1 py-0 text-[10px] text-[#8fbcc0] hover:text-[#c8dfe1]"
+                        aria-label="Toggle password visibility"
+                      >
+                        {passwordVisible ? "🙈" : "👁"}
+                      </button>
+                    </div>
+                  </div>
+                  <p className="text-xs text-[#8fbcc0]">Authentication required: your current password must be correct before the new password is saved.</p>
+                </div>
+                <div className="mt-6 flex gap-3">
+                  <button
+                    type="button"
+                    onClick={() => { setResetMode(false); setProfileStatus(""); }}
+                    className="flex-1 rounded-md border border-[#2f5b75] bg-transparent px-4 py-2 text-sm font-semibold text-[#c8dfe1] hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"
+                    disabled={Boolean(profileBusy)}
+                  >
+                    Back to profile
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex-1 rounded-md border border-[#f84f63] bg-[#f84f63] px-4 py-2 text-sm font-semibold text-[#0a1f36] hover:bg-[#ff667a] disabled:opacity-30 disabled:cursor-not-allowed"
+                    disabled={Boolean(profileBusy)}
+                  >
+                    {profileBusy === "save" ? "Resetting…" : "Reset password"}
+                  </button>
+                </div>
+              </form>
+            ) : (
+              <form onChange={() => setProfileStatus("")} onSubmit={(e) => { e.preventDefault(); updateProfile(); }}>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-xs text-[#8fbcc0] mb-1">Full name</label>
+                    <input
+                      className="w-full rounded border border-[#2f5b75] bg-[#0a2744] px-3 py-2 text-sm text-white focus:outline-none focus:border-[#f84f63]"
+                      value={profileForm.full_name}
+                      onChange={(e) => setProfileForm((current) => ({ ...current, full_name: e.target.value }))}
+                      placeholder="Full name"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-[#8fbcc0] mb-1">Email</label>
+                    <input
+                      className="w-full rounded border border-[#2f5b75] bg-[#0a2744] px-3 py-2 text-sm text-white focus:outline-none focus:border-[#f84f63]"
+                      type="email"
+                      value={profileForm.email}
+                      onChange={(e) => setProfileForm((current) => ({ ...current, email: e.target.value }))}
+                      placeholder="email@example.com"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-[#8fbcc0] mb-1">Initials</label>
+                    <input
+                      className="w-full rounded border border-[#2f5b75] bg-[#0a2744] px-3 py-2 text-sm text-white focus:outline-none focus:border-[#f84f63] text-uppercase"
+                      maxlength="5"
+                      value={profileForm.initials}
+                      onChange={(e) => setProfileForm((current) => ({ ...current, initials: e.target.value.toUpperCase() }))}
+                      placeholder="JD"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-[#8fbcc0] mb-1">Profile picture (upload)</label>
+                    <div className="relative group">
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/jpg,image/gif,image/webp"
+                        className="w-full rounded border border-[#2f5b75] bg-[#0a2744] px-3 py-2 text-sm text-white focus:outline-none focus:border-[#f84f63]"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          setProfileForm((current) => ({ ...current, avatar_file: file }));
+                          const url = URL.createObjectURL(file);
+                          setAvatarPreview(url);
+                          uploadAvatar(file);
+                        }}
+                      />
+                      {avatarPreview && (
+                        <div className="absolute right-2 top-2 flex items-center gap-2">
+                          <img src={avatarPreview} alt="Preview" className="w-8 h-8 rounded-full border border-[#2f5b75] object-cover" />
+                          <span className="text-[10px] text-[#6fd08a] font-medium">Preview</span>
+                        </div>
+                      )}
+                    </div>
+                    <p className="mt-1 text-xs text-[#6b7c86]">Upload a PNG, JPG, GIF, or WEBP image (max 2 MB). Saved to your profile.</p>
+                  </div>
+                  <div className="grid gap-3">
+                    <div>
+                      <label className="block text-xs text-[#8fbcc0] mb-1">Current password</label>
+                      <div className="relative">
+                        <input
+                          className="w-full rounded border border-[#2f5b75] bg-[#0a2744] px-3 py-2 text-sm text-white pr-10 focus:outline-none focus:border-[#f84f63]"
+                          type={passwordVisible ? "text" : "password"}
+                          value={profileForm.current_password}
+                          onChange={(e) => setProfileForm((current) => ({ ...current, current_password: e.target.value }))}
+                          placeholder="••••••••"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setPasswordVisible((v) => !v)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 rounded border border-[#2f5b75] bg-transparent px-1 py-0 text-[10px] text-[#8fbcc0] hover:text-[#c8dfe1]"
+                          aria-label="Toggle password visibility"
+                        >
+                          {passwordVisible ? "🙈" : "👁"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <p className="text-xs text-[#8fbcc0]">Initials are derived from your full name and shown on your profile avatar.</p>
+                  <button
+                    type="button"
+                    onClick={() => { setResetMode(true); setProfileStatus(""); }}
+                    className="w-full rounded-md border border-[#2f5b75] bg-transparent px-3 py-2 text-sm font-semibold text-[#8ed0c9] hover:bg-white/5"
+                  >
+                    Forgot password?
+                  </button>
+                </div>
+                <div className="mt-6 flex gap-3">
+                  <button
+                    type="button"
+                    onClick={closeProfile}
+                    className="flex-1 rounded-md border border-[#2f5b75] bg-transparent px-4 py-2 text-sm font-semibold text-[#c8dfe1] hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"
+                    disabled={Boolean(profileBusy)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="flex-1 rounded-md border border-[#f84f63] bg-[#f84f63] px-4 py-2 text-sm font-semibold text-[#0a1f36] hover:bg-[#ff667a] disabled:opacity-30 disabled:cursor-not-allowed"
+                    disabled={Boolean(profileBusy)}
+                  >
+                    {profileBusy === "save" ? "Saving…" : "Save changes"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
     </Shell>
   );
 }

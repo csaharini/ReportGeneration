@@ -1,6 +1,7 @@
 import json, os, secrets, urllib.parse
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import RedirectResponse, Response, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi import HTTPException
 from starlette.middleware.sessions import SessionMiddleware
 import config  # Loads local .env values before database modules are imported.
@@ -11,6 +12,8 @@ import standards_library
 import materials_library
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+AVATAR_DIR = os.path.join(HERE, "uploads", "avatars")
+os.makedirs(AVATAR_DIR, exist_ok=True)
 
 
 def _enabled(value):
@@ -46,6 +49,7 @@ app.add_middleware(
     same_site="strict",
     https_only=_secure_cookie,
 )
+app.mount("/avatars", StaticFiles(directory=AVATAR_DIR), name="avatars")
 
 
 def _csrf_token(request: Request):
@@ -111,6 +115,81 @@ def schema(request: Request):
 @app.get("/api/auth/me")
 def current_user(request: Request):
     return {"user": require_user(request), "csrf_token": _csrf_token(request)}
+
+
+@app.put("/api/auth/profile")
+async def update_profile(request: Request):
+    require_csrf(request)
+    user = require_user(request)
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid profile request.")
+    try:
+        updated = auth.update_user_profile(user["id"], payload)
+    except auth.AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except auth.AuthConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if not updated:
+        raise HTTPException(status_code=400, detail="No valid profile fields provided.")
+    request.session.clear()
+    request.session["user_id"] = updated["id"]
+    return {"user": updated, "csrf_token": _csrf_token(request)}
+
+
+@app.post("/api/auth/reset-password")
+async def reset_password(request: Request):
+    require_csrf(request)
+    user = require_user(request)
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid password reset request.")
+    current_password = payload.get("current_password", "")
+    new_password = payload.get("new_password", "")
+    if not current_password or not new_password:
+        raise HTTPException(status_code=400, detail="Current password and new password are required.")
+    try:
+        updated = auth.reset_password(user["id"], current_password, new_password)
+    except auth.AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except auth.AuthConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if not updated:
+        raise HTTPException(status_code=400, detail="Password reset failed.")
+    request.session.clear()
+    request.session["user_id"] = updated["id"]
+    return {"user": updated, "csrf_token": _csrf_token(request)}
+
+
+@app.post("/api/auth/avatar")
+async def upload_avatar(request: Request):
+    require_csrf(request)
+    user = require_user(request)
+    try:
+        form = await request.form()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid avatar upload request.")
+    file = form.get("file")
+    if not file or not hasattr(file, "read") or not file.filename:
+        raise HTTPException(status_code=400, detail="No avatar file provided.")
+    try:
+        contents = await file.read()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Failed to read avatar file.")
+    content_type = file.content_type or "application/octet-stream"
+    try:
+        updated = auth.upload_avatar(user["id"], contents, file.filename, content_type)
+    except auth.AuthError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except auth.AuthConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    if not updated:
+        raise HTTPException(status_code=400, detail="Avatar upload failed.")
+    request.session.clear()
+    request.session["user_id"] = updated["id"]
+    return {"user": updated, "csrf_token": _csrf_token(request)}
 
 
 @app.get("/api/auth/csrf")
