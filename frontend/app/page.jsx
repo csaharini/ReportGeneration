@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 /* ------------------------------------------------------------------ */
@@ -16,6 +18,7 @@ const STEPS = [
 ];
 
 const MATERIAL_IDS = new Set(["material", "fu", "fy", "young", "nu", "rho"]);
+const DRAFT_KEY = "reportgenix-draft-v2";
 
 const GLOBAL_CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
@@ -539,27 +542,45 @@ function ComplianceEditor({ rows, setRows, catalog, request }) {
 /*  Report sections                                                    */
 /* ------------------------------------------------------------------ */
 
-function SectionEditor({ section, data, setData, files, setFiles, selected, setSelected, children }) {
+function SectionEditor({ section, sections, data, setData, files, setFiles, extraImages, setExtraImages, removedSchemaImages, setRemovedSchemaImages, selected, setSelected, children }) {
   const enabled = selected.includes(section.id);
+  const headingId = `heading__${section.id}`;
+  const router = useRouter();
+  const sectionIds = sections.map((s) => s.id);
+  const currentIndex = sectionIds.indexOf(section.id);
+  const prevSection = currentIndex > 0 ? sections[currentIndex - 1] : null;
+  const nextSection = currentIndex < sectionIds.length - 1 ? sections[currentIndex + 1] : null;
+  const goTo = (id) => router.push(`/section/${id}`);
+  const sectionExtra = extraImages[section.id] || [];
+  const allImages = [
+    ...section.images.map((img) => ({ ...img, source: "schema" })),
+    ...sectionExtra.map((img) => ({ ...img, source: "extra" })),
+  ];
+
   return (
     <section className={`overflow-hidden rounded-2xl border ${enabled ? "border-[#2a5068] bg-[#0e3250]" : "border-[#2a5068]/50 bg-[#0b2b47]/60 opacity-70"}`}>
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-[#2a5068]/60 px-5 py-4">
-        <div>
-          <h3 className="font-semibold text-white">{section.title}</h3>
-          <p className="mt-0.5 text-xs text-[#9bbcc0]">Report section</p>
+        <div className="flex items-center gap-3">
+          <div>
+            <h3 className="font-semibold text-white">{section.title}</h3>
+            <p className="mt-0.5 text-xs text-[#9bbcc0]">Report section</p>
+          </div>
         </div>
-        <button
-          onClick={() => setSelected((current) => (enabled ? current.filter((id) => id !== section.id) : [...current, section.id]))}
-          aria-pressed={enabled}
-          className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${enabled ? "bg-[#77c2bd]/15 text-[#afdfd8]" : "bg-white/5 text-[#b8cdcf] hover:bg-white/10"}`}
-        >
-          {enabled ? "Included" : "Excluded"}
-        </button>
       </header>
 
       {enabled && (
         <div className="space-y-5 p-5 sm:p-6">
           {children}
+          <div className={INSET}>
+            <p className="mb-3 text-xs font-semibold uppercase tracking-[.14em] text-[#83c6c0]">Editable report heading</p>
+            <Labeled label="Main section heading">
+              <input
+                className={INPUT}
+                value={data[headingId] ?? section.title}
+                onChange={(event) => setData((current) => ({ ...current, [headingId]: event.target.value }))}
+              />
+            </Labeled>
+          </div>
           {section.fields.length > 0 && (
             <div className="grid gap-4 md:grid-cols-2">
               {section.fields.map((field) => (
@@ -567,24 +588,108 @@ function SectionEditor({ section, data, setData, files, setFiles, selected, setS
               ))}
             </div>
           )}
-          {section.images.length > 0 && (
+          {allImages.length > 0 && (
             <div className="grid gap-4 md:grid-cols-2">
-              {section.images.map((image) => (
-                <label key={image.id} className="block rounded-xl border border-dashed border-[#2f5b75] bg-[#0a2744]/60 p-4">
-                  <span className="mb-2 block text-sm font-medium text-[#d3e9e7]">{image.label}</span>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    className="block w-full text-xs text-[#a8c9ca] file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-[#f84f63] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#0a1f36]"
-                    onChange={(e) => setFiles((current) => ({ ...current, [image.id]: e.target.files?.[0] || null }))}
-                  />
-                  {files[image.id] && <p className="mt-2 break-all text-xs text-[#8fd0c8]">Attached: {files[image.id].name}</p>}
-                </label>
-              ))}
-            </div>
-          )}
+              {allImages.map((image) => {
+                const isSchema = image.source === "schema";
+                const cardKey = isSchema ? `schema_${image.id}` : `extra_${image.id}`;
+                const isRemoved = removedSchemaImages[`${section.id}:${image.id}`];
+                if (isRemoved) return null;
+                return (
+                  <div key={cardKey} className="rounded-xl border border-dashed border-[#2f5b75] bg-[#0a2744]/60 p-4 relative">
+                    <button
+                      onClick={() => {
+                        if (isSchema) {
+                          setRemovedSchemaImages((current) => ({
+                            ...current,
+                            [`${section.id}:${image.id}`]: true,
+                          }));
+                        } else {
+                          setExtraImages((current) => ({
+                            ...current,
+                            [section.id]: (current[section.id] || []).filter((img) => img.id !== image.id),
+                          }));
+                          setFiles((current) => {
+                            const next = { ...current };
+                            delete next[image.id];
+                            return next;
+                          });
+                        }
+                      }}
+                      className="absolute top-2 right-2 rounded-full border border-[#2f5b75] bg-[#0a2744] text-[#ff8e9c] text-xs p-1 hover:bg-[#ff8e9c]/20 hover:text-white"
+                      aria-label="Remove image"
+                    >
+                      &#215;
+                    </button>
+                    <p className="mb-3 text-sm font-medium text-[#d3e9e7]">Evidence image</p>
+                    <Labeled label="Image heading / caption">
+                      <input
+                        className={INPUT}
+                        value={data[`cap__${image.id}`] ?? (isSchema ? image.label : image.label || "")}
+                        onChange={(event) => setData((current) => ({ ...current, [`cap__${image.id}`]: event.target.value }))}
+                        placeholder="Enter image heading"
+                      />
+                    </Labeled>
+                    <div className="mt-3 grid grid-cols-2 gap-3">
+                      <Labeled label="Image position">
+                        <select className={INPUT} value={data[`img_align__${image.id}`] ?? "inherit"} onChange={(event) => setData((current) => ({ ...current, [`img_align__${image.id}`]: event.target.value }))}>
+                          <option value="inherit">Inherit layout</option><option value="left">Left</option><option value="center">Center</option><option value="right">Right</option>
+                        </select>
+                      </Labeled>
+                      <Labeled label="Caption placement">
+                        <select className={INPUT} value={data[`cap_pos__${image.id}`] ?? "inherit"} onChange={(event) => setData((current) => ({ ...current, [`cap_pos__${image.id}`]: event.target.value }))}>
+                          <option value="inherit">Inherit layout</option><option value="above">Above</option><option value="below">Below</option>
+                        </select>
+                      </Labeled>
+                    </div>
+                    <Labeled label="Image height (mm)" className="mt-3">
+                      <input className={INPUT} type="number" min="20" max="140" value={data[`img_height__${image.id}`] ?? (isSchema ? image.h : 60)} onChange={(event) => setData((current) => ({ ...current, [`img_height__${image.id}`]: event.target.value }))} />
+                    </Labeled>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="mt-4 block w-full text-xs text-[#a8c9ca] file:mr-3 file:cursor-pointer file:rounded-md file:border-0 file:bg-[#f84f63] file:px-3 file:py-2 file:text-xs file:font-semibold file:text-[#0a1f36]"
+                      onChange={(e) => setFiles((current) => ({ ...current, [image.id]: e.target.files?.[0] || null }))}
+                    />
+                    {files[image.id] && <p className="mt-2 break-all text-xs text-[#8fd0c8]">Attached: {files[image.id].name}</p>}
+                  </div>
+                )
+              }
+              )}
+                <button
+                  onClick={() => {
+                    const newId = `extra_${section.id}_${Date.now()}`;
+                    setExtraImages((current) => ({
+                      ...current,
+                      [section.id]: [...(current[section.id] || []), { id: newId, label: "", h: 60 }],
+                    }));
+                    setData((current) => ({ ...current, [`cap__${newId}`]: "" }));
+                  }}
+                  className="flex-1 sm:flex-none rounded-md border border-[#2f5b75] bg-transparent text-[#b9d2d3] px-4 py-2 text-sm font-semibold hover:bg-white/5"
+                >
+                  + Add image
+                </button>
+              </div>
+            )
+          }
         </div>
       )}
+      <div className="border-t border-[#2a5068]/40 px-5 py-4 mt-6 flex flex-wrap justify-between gap-3 items-center">
+        <button
+          onClick={() => prevSection && goTo(prevSection.id)}
+          disabled={!prevSection}
+          className={`flex-1 sm:flex-none rounded-md px-4 py-2 text-sm font-semibold transition ${!prevSection ? "opacity-30 cursor-not-allowed border border-[#2f5b75] bg-transparent text-[#6b7c86]" : "border border-[#f84f63] bg-[#f84f63] text-[#0a1f36] hover:bg-[#ff667a]"}`}
+        >
+          &#8592; Back
+        </button>
+        <button
+          onClick={() => nextSection && goTo(nextSection.id)}
+          disabled={!nextSection}
+          className={`flex-1 sm:flex-none rounded-md px-4 py-2 text-sm font-semibold transition ${!nextSection ? "opacity-30 cursor-not-allowed border border-[#2f5b75] bg-transparent text-[#6b7c86]" : "border border-[#f84f63] bg-[#f84f63] text-[#0a1f36] hover:bg-[#ff667a]"}`}
+        >
+          Next &#8594;
+        </button>
+      </div>
     </section>
   );
 }
@@ -594,9 +699,11 @@ function SectionEditor({ section, data, setData, files, setFiles, selected, setS
 /* ------------------------------------------------------------------ */
 
 export default function ReportGenix() {
+  const pathname = usePathname();
   const [ready, setReady] = useState(false);
   const [user, setUser] = useState(null);
   const [csrf, setCsrf] = useState("");
+  const router = useRouter();
   const [authMode, setAuthMode] = useState("login");
   const [authForm, setAuthForm] = useState({ full_name: "", email: "", password: "" });
   const [authStatus, setAuthStatus] = useState("");
@@ -612,9 +719,13 @@ export default function ReportGenix() {
   const [selectedMaterialId, setSelectedMaterialId] = useState("");
   const [materialMeta, setMaterialMeta] = useState({ material_type: "", category: "steel", source_standard_id: "", notes: "" });
   const [materialStatus, setMaterialStatus] = useState(null);
+  const [extraImages, setExtraImages] = useState({});
+  const [removedSchemaImages, setRemovedSchemaImages] = useState({});
   const [step, setStep] = useState(1);
   const [previewUrl, setPreviewUrl] = useState("");
   const [busy, setBusy] = useState("");
+  const [raeLookup, setRaeLookup] = useState({ status: "idle", message: "", matchType: null });
+  const raeTimer = useRef(null);
 
   const request = useCallback(
     async (path, options = {}) => {
@@ -634,12 +745,24 @@ export default function ReportGenix() {
     setSchema(nextSchema);
     setStandardsCatalog(nextStandards.standards || []);
     setMaterialsCatalog(nextMaterials.materials || []);
+    let saved = {};
+    try {
+      saved = JSON.parse(window.sessionStorage.getItem(DRAFT_KEY) || "{}") || {};
+    } catch {
+      window.sessionStorage.removeItem(DRAFT_KEY);
+    }
     setData((current) =>
       Object.fromEntries(
-        nextSchema.general.map((field) => [field.id, current[field.id] ?? field.default ?? (field.type === "date" ? new Date().toISOString().slice(0, 10) : "")])
+        nextSchema.general.map((field) => [field.id, saved.data?.[field.id] ?? current[field.id] ?? field.default ?? (field.type === "date" ? new Date().toISOString().slice(0, 10) : "")])
       )
     );
-    setSelected(nextSchema.sections.map((section) => section.id));
+    setData((current) => ({ ...current, ...(saved.data || {}) }));
+    setStandards(Array.isArray(saved.standards) ? saved.standards : []);
+    setSelected(Array.isArray(saved.selected) ? saved.selected : nextSchema.sections.map((section) => section.id));
+    setLayout((current) => ({ ...current, ...(saved.layout || {}) }));
+    setMaterialMode(saved.materialMode === "manual" ? "manual" : "library");
+    setSelectedMaterialId(saved.selectedMaterialId || "");
+    setMaterialMeta((current) => ({ ...current, ...(saved.materialMeta || {}) }));
   }, [request]);
 
   useEffect(() => {
@@ -667,13 +790,48 @@ export default function ReportGenix() {
     };
   }, []);
 
+  const lookupRae = useCallback(async (raeId) => {
+    if (!raeId || !/^\d+$/.test(raeId.trim())) {
+      setRaeLookup({ status: "idle", message: "", matchType: null });
+      return;
+    }
+    const id = raeId.trim();
+    setRaeLookup({ status: "loading", message: "Looking up project…", matchType: null });
+    try {
+      const response = await request(`/api/project-by-rae/${encodeURIComponent(id)}`);
+      const result = await response.json();
+      if (result.project_name) {
+        setData((current) => ({ ...current, project_name: result.project_name }));
+        const label = result.subproject_name ? `${result.project_name} — ${result.subproject_name}` : result.project_name;
+        setRaeLookup({ status: "ok", message: `Found: ${label} (${result.match_type || "exact"} match)`, matchType: result.match_type || "exact" });
+      } else {
+        setRaeLookup({ status: "error", message: "No project found for this RAE ID.", matchType: null });
+      }
+    } catch (error) {
+      setRaeLookup({ status: "error", message: error.message || "Lookup failed.", matchType: null });
+    }
+  }, [request]);
+
   useEffect(() => {
     if (user && csrf) loadStudio().catch((error) => setAuthStatus(error.message));
   }, [user, csrf, loadStudio]);
 
   useEffect(() => {
-    window.scrollTo({ top: 0 });
-  }, [step]);
+    if (raeTimer.current) window.clearTimeout(raeTimer.current);
+    raeTimer.current = window.setTimeout(() => {
+      lookupRae(data.rae_no);
+    }, 500);
+    return () => {
+      if (raeTimer.current) window.clearTimeout(raeTimer.current);
+    };
+  }, [data.rae_no, lookupRae]);
+
+  useEffect(() => { window.scrollTo({ top: 0 }); }, [pathname]);
+
+  useEffect(() => {
+    if (!schema) return;
+    window.sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ data, standards, selected, layout, materialMode, selectedMaterialId, materialMeta }));
+  }, [schema, data, standards, selected, layout, materialMode, selectedMaterialId, materialMeta]);
 
   useEffect(() => {
     if (materialMode !== "manual" || !data.material || !materialMeta.material_type || !data.fu || !csrf) return;
@@ -739,6 +897,7 @@ export default function ReportGenix() {
       setFiles({});
       setPreviewUrl("");
       setStep(1);
+      window.sessionStorage.removeItem(DRAFT_KEY);
     }
   };
 
@@ -751,6 +910,20 @@ export default function ReportGenix() {
     setBusy(output);
     try {
       const form = new FormData();
+      const extraImagesPayload = {};
+      Object.entries(extraImages).forEach(([sectionId, images]) => {
+        extraImagesPayload[sectionId] = images.map((img) => ({
+          id: img.id,
+          label: data[`cap__${img.id}`] || img.label || "",
+          position: data[`img_align__${img.id}`] || "inherit",
+          caption_position: data[`cap_pos__${img.id}`] || "inherit",
+          height: data[`img_height__${img.id}`] || img.h || 60,
+        }));
+      });
+      const removedImagesPayload = Object.keys(removedSchemaImages).map((key) => {
+        const [sectionId, imageId] = key.split(":");
+        return { sectionId, imageId };
+      });
       form.append(
         "payload",
         JSON.stringify({
@@ -758,8 +931,8 @@ export default function ReportGenix() {
           standards: reportRows,
           selected,
           layout,
-          extra_images: {},
-          removed_images: [],
+          extra_images: extraImagesPayload,
+          removed_images: removedImagesPayload,
           output: output === "preview" ? "pdf" : output,
         })
       );
@@ -835,7 +1008,11 @@ export default function ReportGenix() {
     );
   }
 
-  const generalFields = schema.general.filter((field) => !MATERIAL_IDS.has(field.id));
+  const generalFields = schema.general.filter((field) => !MATERIAL_IDS.has(field.id) && field.id !== "rae_no");
+  const raeField = schema.general.find((field) => field.id === "rae_no");
+  const sectionId = pathname.startsWith("/section/") ? decodeURIComponent(pathname.slice("/section/".length)) : "";
+  const activeSection = schema.sections.find((section) => section.id === sectionId);
+  const route = pathname === "/" ? "home" : pathname === "/projects" ? "projects" : pathname === "/layout" ? "layout" : pathname === "/issue" ? "issue" : activeSection ? "section" : "not-found";
   const reportSections = schema.sections.filter((section) => section.id !== "summary");
   const layoutOptions = [
     ["heading_align", "Heading alignment", ["left", "center", "right"]],
@@ -844,13 +1021,20 @@ export default function ReportGenix() {
     ["caption_position", "Caption placement", ["below", "above"]],
     ["caption_align", "Caption alignment", ["center", "left", "right"]],
   ];
+  const navClass = (active) => `rounded-md px-3 py-2 text-sm font-medium transition ${active ? "bg-[#f84f63] text-[#0a1f36]" : "text-[#c6dce2] hover:bg-white/5 hover:text-white"}`;
 
   return (
     <Shell>
       <header className="sticky top-0 z-30 border-b border-[#2a5068]/60 bg-[#0a2744]/95 px-4 py-3 backdrop-blur sm:px-6 lg:px-10">
         <div className="mx-auto flex max-w-[1600px] items-center gap-3">
-          <img src="/csa_logo.webp" alt="CSA Engineering" className="h-9 w-auto" />
-          <span className="border-l border-[#2f5b75] pl-3 text-base font-semibold">ReportGenix</span>
+          <Link href="/" className="flex shrink-0 items-center gap-3"><img src="/csa_logo.webp" alt="CSA Engineering" className="h-9 w-auto" /><span className="hidden border-l border-[#2f5b75] pl-3 text-base font-semibold sm:inline">ReportGenix</span></Link>
+          <nav className="ml-2 hidden items-center gap-1 lg:flex" aria-label="Workspace navigation">
+            <Link href="/" className={navClass(route === "home")}>Project</Link>
+            <Link href="/projects" className={navClass(route === "projects")}>Libraries</Link>
+            <details className="relative"><summary className={`${navClass(route === "section")} list-none cursor-pointer`}>Sections</summary><div className="absolute left-0 top-10 z-40 grid w-72 gap-1 rounded-xl border border-[#2f5b75] bg-[#0e3250] p-2 shadow-2xl">{reportSections.map((section) => <Link key={section.id} href={`/section/${section.id}`} className="rounded-lg px-3 py-2 text-sm text-[#c8dfe1] hover:bg-[#16415f] hover:text-white">{section.title}</Link>)}</div></details>
+            <Link href="/layout" className={navClass(route === "layout")}>Layout</Link>
+            <Link href="/issue" className={navClass(route === "issue")}>Issue</Link>
+          </nav>
           <div className="ml-auto flex items-center gap-2">
             <span className="hidden max-w-[220px] truncate text-sm text-[#b9d2d3] md:inline">{user.full_name || user.email}</span>
             <ActionButton variant="ghost" onClick={() => downloadTemplate("pdf")} className="hidden !px-4 !py-2 sm:inline-flex">Blank PDF</ActionButton>
@@ -860,76 +1044,47 @@ export default function ReportGenix() {
       </header>
 
       <div className="mx-auto max-w-[1600px] px-4 py-6 sm:px-6 sm:py-8 lg:px-10">
-        <section className="relative mb-6 overflow-hidden rounded-3xl bg-[#16405c] px-6 py-8 sm:mb-8 sm:px-10 sm:py-10">
-          <img src="/fea-trailer.webp" alt="" aria-hidden="true" className="pointer-events-none absolute inset-y-0 right-0 hidden h-full w-1/2 select-none object-cover object-left opacity-40 md:block" />
-          <div className="relative max-w-2xl">
-            <p className={EYEBROW}>CSA Engineering</p>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white sm:text-4xl">Trailer Certification Studio</h1>
-            <p className="mt-3 text-sm leading-6 text-[#b6d3d4] sm:text-base">
-              Build structured compliance reports, attach FEA evidence, and issue a controlled PDF or editable Word document.
-            </p>
-          </div>
-        </section>
+        <div className="mb-6 flex flex-col justify-between gap-4 rounded-2xl border border-[#2a5068] bg-[#0e3250] px-5 py-5 sm:flex-row sm:items-center sm:px-7"><div><p className={EYEBROW}>{route === "home" ? "Project information" : route === "projects" ? "Project libraries" : route === "section" ? "Report section" : route === "layout" ? "Document configuration" : "Report issue"}</p><h1 className="mt-1 text-2xl font-semibold text-white">{route === "home" ? "Report details" : route === "projects" ? "Materials & compliance" : route === "section" ? (data[`heading__${activeSection.id}`] || activeSection.title) : route === "layout" ? "Layout controls" : "Review and export"}</h1></div><div className="flex flex-wrap gap-2 lg:hidden"><Link href="/" className={navClass(route === "home")}>Project</Link><Link href="/projects" className={navClass(route === "projects")}>Libraries</Link><Link href="/issue" className={navClass(route === "issue")}>Issue</Link></div></div>
 
-        <nav className="mb-6 grid grid-cols-2 gap-3 sm:mb-8 xl:grid-cols-4" aria-label="Report steps">
-          {STEPS.map(([number, title, subtitle], index) => {
-            const active = step === index + 1;
-            return (
-              <button
-                key={number}
-                onClick={() => setStep(index + 1)}
-                aria-current={active ? "step" : undefined}
-                className={`rounded-xl border p-3.5 text-left transition sm:p-4 ${active ? "border-[#f84f63] bg-[#f84f63] text-[#0a1f36]" : "border-[#2a5068] bg-[#0e3250] text-[#d2e8e6] hover:bg-[#16415f]"}`}
-              >
-                <span className="text-xs font-semibold opacity-75">{number}</span>
-                <span className="mt-0.5 block font-semibold">{title}</span>
-                <span className="mt-0.5 hidden text-xs opacity-75 sm:block">{subtitle}</span>
-              </button>
-            );
-          })}
-        </nav>
-
-        {step === 1 && (
-          <div className="grid gap-6">
-            <section className={CARD}>
-              <p className={EYEBROW}>Project information</p>
-              <h2 className="mt-1 text-xl font-semibold text-white">Report details</h2>
-              <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-                {generalFields.map((field) => (
-                  <Field key={field.id} field={field} value={data[field.id]} onChange={(value) => setData((current) => ({ ...current, [field.id]: value }))} />
-                ))}
-              </div>
-            </section>
-            <MaterialEditor
-              catalog={materialsCatalog}
-              mode={materialMode}
-              setMode={setMaterialMode}
-              selectedId={selectedMaterialId}
-              setSelectedId={setSelectedMaterialId}
-              data={data}
-              setData={setData}
-              materialMeta={materialMeta}
-              setMaterialMeta={setMaterialMeta}
-              status={materialStatus}
-            />
-          </div>
-        )}
-
-        {step === 2 && (
-          <div className="space-y-6">
-            <ComplianceEditor rows={standards} setRows={setStandards} catalog={standardsCatalog} request={request} />
-            {reportSections.map((section) => (
-              <SectionEditor key={section.id} section={section} data={data} setData={setData} files={files} setFiles={setFiles} selected={selected} setSelected={setSelected}>
-                {section.id === "requirements" && <p className="text-sm text-[#b7d1d2]">Requirements are generated from the Summary of Compliance rows above.</p>}
-              </SectionEditor>
-            ))}
-          </div>
-        )}
-
-        {step === 3 && (
+        {route === "home" && (
           <section className={CARD}>
-            <p className={EYEBROW}>Report layout</p>
-            <h2 className="mt-1 text-xl font-semibold text-white">Document styling</h2>
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {raeField && (
+                <div className="xl:col-span-3">
+                  <Labeled label={raeField.label + (raeField.unit ? " (" + raeField.unit + ")" : "") + " Lookup"}>
+                    <div className="flex gap-2">
+                      <input
+                        className={INPUT}
+                        type="text"
+                        value={data.rae_no ?? ""}
+                        onChange={(e) => setData((current) => ({ ...current, rae_no: e.target.value }))}
+                      />
+                      {raeLookup.status === "loading" && (
+                        <span className="text-xs text-[#b9d2d3]">searching…</span>
+                      )}
+                      {raeLookup.status === "ok" && (
+                        <span className="text-xs text-[#6fd08a]">{raeLookup.message}</span>
+                      )}
+                      {raeLookup.status === "error" && (
+                        <span className="text-xs text-[#ff8e9c]">{raeLookup.message}</span>
+                      )}
+                    </div>
+                  </Labeled>
+                </div>
+              )}
+              {generalFields.map((field) => (
+                <Field key={field.id} field={field} value={data[field.id]} onChange={(value) => setData((current) => ({ ...current, [field.id]: value }))} />
+              ))}
+            </div>
+          </section>
+        )}
+
+        {route === "projects" && <div className="space-y-6"><MaterialEditor catalog={materialsCatalog} mode={materialMode} setMode={setMaterialMode} selectedId={selectedMaterialId} setSelectedId={setSelectedMaterialId} data={data} setData={setData} materialMeta={materialMeta} setMaterialMeta={setMaterialMeta} status={materialStatus} /><ComplianceEditor rows={standards} setRows={setStandards} catalog={standardsCatalog} request={request} /></div>}
+
+        {route === "section" && <SectionEditor sections={schema.sections} section={activeSection} data={data} setData={setData} files={files} setFiles={setFiles} extraImages={extraImages} setExtraImages={setExtraImages} removedSchemaImages={removedSchemaImages} setRemovedSchemaImages={setRemovedSchemaImages} selected={selected} setSelected={setSelected}>{activeSection.id === "requirements" && <p className="text-sm text-[#b7d1d2]">Requirements are generated from the Summary of Compliance entries in <Link href="/projects" className="font-semibold text-[#81c9c2] underline">Project libraries</Link>.</p>}{activeSection.id === "cert" && <p className="text-sm text-[#b7d1d2]">The certificate QR code and Australia watermark are applied automatically in preview and final documents.</p>}</SectionEditor>}
+
+        {route === "layout" && (
+          <section className={CARD}>
             <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
               {layoutOptions.map(([key, label, options]) => (
                 <Labeled key={key} label={label}>
@@ -944,7 +1099,7 @@ export default function ReportGenix() {
           </section>
         )}
 
-        {step === 4 && (
+        {route === "issue" && (
           <section className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
             <div className={CARD}>
               <p className={EYEBROW}>Ready to issue</p>
@@ -984,12 +1139,47 @@ export default function ReportGenix() {
             </aside>
           </section>
         )}
-
-        <div className="mt-8 flex items-center justify-between gap-3">
-          <ActionButton variant="ghost" onClick={() => setStep((value) => Math.max(1, value - 1))} disabled={step === 1}>Back</ActionButton>
-          {step < 4 && <ActionButton onClick={() => setStep((value) => Math.min(4, value + 1))}>Continue</ActionButton>}
+        {route === "not-found" && <section className={CARD}><p className="text-[#ff8e9c]">This report page does not exist.</p><Link href="/" className="mt-4 inline-block text-sm font-semibold text-[#8ed0c9] underline">Return to project details</Link></section>}
+        <div className="mt-12 border-t border-[#2a5068]/40 pt-8 px-6">
+          <div className="flex flex-wrap justify-between items-center gap-4">
+            <div className="text-xs text-[#6b7c86] uppercase tracking-wider font-medium">Stage navigation</div>
+            <div className="flex items-center gap-3 text-sm text-[#b9d2d3]">
+              <span className="text-[#6b7c86]">{route === "home" ? "1" : route === "projects" ? "2" : route === "section" ? "3" : route === "layout" ? "4" : "5"} / 5</span>
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  if (route === "home") router.push("/");
+                  else if (route === "projects") router.push("/");
+                  else if (route === "section") {
+                    const idx = schema.sections.findIndex((s) => s.id === activeSection.id);
+                    router.push(idx > 0 ? `/section/${schema.sections[idx - 1].id}` : "/projects");
+                  } else if (route === "layout") router.push("/section/" + (schema.sections.find((s) => s.id === "cert")?.id || schema.sections[0]?.id || ""));
+                  else if (route === "issue") router.push("/layout");
+                }}
+                className="rounded-md px-4 py-2 text-sm font-semibold border border-[#2f5b75] bg-transparent text-[#b9d2d3] hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                Back
+              </button>
+              <button
+                onClick={() => {
+                  if (route === "home") router.push("/projects");
+                  else if (route === "projects") router.push("/issue");
+                  else if (route === "section") {
+                    const idx = schema.sections.findIndex((s) => s.id === activeSection.id);
+                    router.push(idx < schema.sections.length - 1 ? `/section/${schema.sections[idx + 1].id}` : "/layout");
+                  } else if (route === "layout") router.push("/issue");
+                  else if (route === "issue") router.push("/issue");
+                }}
+                className="rounded-md px-4 py-2 text-sm font-semibold border border-[#f84f63] bg-[#f84f63] text-[#0a1f36] hover:bg-[#ff667a] disabled:opacity-30 disabled:cursor-not-allowed"
+              >
+                Next
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </Shell>
   );
 }
+

@@ -20,6 +20,15 @@ Open `http://127.0.0.1:3000`. Next proxies `/api/*` to FastAPI at
 when the API is elsewhere. The backend root URL redirects to the frontend; set
 `FRONTEND_ORIGIN` in its environment when deploying.
 
+Frontend routes:
+
+- `/` — report details only.
+- `/projects` — material library and Summary of Compliance.
+- `/section/background` (and every other section ID) — that section's fields,
+  editable main heading, editable image captions, image placement, and uploads.
+- `/layout` — global report layout controls.
+- `/issue` — preview and PDF/Word export.
+
 - To enable automatic project lookup, set `RAE_DB_HOST`, `RAE_DB_PORT`, `RAE_DB_NAME`, `RAE_DB_USER`, and `RAE_DB_PASSWORD` on the app server; see `.env.example`.
 - Entering an RAE ID looks up `projects.project_id` and fills Project name with `projects.project_name`; it also accepts `subprojects.table_id` when a subproject ID is supplied. Projects without subprojects are supported.
 - Sign-up and sign-in use the existing `csareport.users` table. Passwords are bcrypt hashes, and authentication uses an HttpOnly, signed session cookie with `SameSite=Strict` plus CSRF protection for every state-changing request.

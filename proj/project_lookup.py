@@ -43,12 +43,54 @@ def _connection():
         connection.close()
 
 
+def _query_record(connection, record_id, fuzzy=False):
+    if fuzzy:
+        like = f"{record_id}%"
+        sql = """
+            SELECT
+                CASE WHEN p.project_id = %s THEN p.project_id ELSE s.table_id END AS rae_id,
+                s.subproject_name,
+                p.project_id,
+                p.project_name,
+                CASE WHEN p.project_id = %s THEN 'project' ELSE 'subproject' END AS source,
+                'fuzzy' AS match_type
+            FROM projects AS p
+            LEFT JOIN subprojects AS s ON s.project_id = p.project_id
+            WHERE CAST(p.project_id AS CHAR) LIKE %s OR CAST(s.table_id AS CHAR) LIKE %s
+            ORDER BY p.project_id ASC, s.table_id ASC
+            LIMIT 1
+        """
+        params = (record_id, record_id, like, like)
+    else:
+        sql = """
+            SELECT
+                CASE WHEN p.project_id = %s THEN p.project_id ELSE s.table_id END AS rae_id,
+                s.subproject_name,
+                p.project_id,
+                p.project_name,
+                CASE WHEN p.project_id = %s THEN 'project' ELSE 'subproject' END AS source,
+                'exact' AS match_type
+            FROM projects AS p
+            LEFT JOIN subprojects AS s ON s.project_id = p.project_id
+            WHERE p.project_id = %s OR s.table_id = %s
+            ORDER BY CASE WHEN p.project_id = %s THEN 0 ELSE 1 END, s.table_id ASC
+            LIMIT 1
+        """
+        params = (record_id, record_id, record_id, record_id, record_id)
+    with connection.cursor() as cursor:
+        cursor.execute(sql, params)
+        return cursor.fetchone()
+
+
 def find_project(rae_id: str):
     """Find a subproject and its parent project without modifying the database.
 
     RAE IDs normally map to `projects.project_id`.  A `subprojects.table_id`
     match is also accepted.  Starting from projects is important because a
     valid project can have no subprojects yet.
+
+    Exact match is tried first; a prefix (fuzzy) match is used as a fallback
+    so partial RAE IDs still surface the right project automatically.
     """
     try:
         record_id = int(str(rae_id).strip())
@@ -57,20 +99,9 @@ def find_project(rae_id: str):
     if record_id < 1:
         return None
 
-    sql = """
-        SELECT
-            CASE WHEN p.project_id = %s THEN p.project_id ELSE s.table_id END AS rae_id,
-            s.subproject_name,
-            p.project_id,
-            p.project_name,
-            CASE WHEN p.project_id = %s THEN 'project' ELSE 'subproject' END AS match_type
-        FROM projects AS p
-        LEFT JOIN subprojects AS s ON s.project_id = p.project_id
-        WHERE p.project_id = %s OR s.table_id = %s
-        ORDER BY CASE WHEN p.project_id = %s THEN 0 ELSE 1 END, s.table_id ASC
-        LIMIT 1
-    """
     with _connection() as connection:
-        with connection.cursor() as cursor:
-            cursor.execute(sql, (record_id, record_id, record_id, record_id, record_id))
-            return cursor.fetchone()
+        result = _query_record(connection, record_id, fuzzy=False)
+        if result:
+            return result
+        result = _query_record(connection, record_id, fuzzy=True)
+        return result
