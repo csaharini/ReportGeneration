@@ -1,6 +1,6 @@
 import json, os, secrets, urllib.parse
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, Response, JSONResponse
+from fastapi.responses import RedirectResponse, Response, JSONResponse
 from fastapi import HTTPException
 from starlette.middleware.sessions import SessionMiddleware
 import config  # Loads local .env values before database modules are imported.
@@ -97,8 +97,10 @@ def require_user(request: Request):
         raise HTTPException(status_code=401, detail="Your session has expired. Sign in again.")
     return user
 
-@app.get("/")
-def index(): return FileResponse("static/index.html")
+@app.get("/", include_in_schema=False)
+def index():
+    """Open the Next.js application; FastAPI remains the secured API service."""
+    return RedirectResponse(os.getenv("FRONTEND_ORIGIN", "http://127.0.0.1:3000"))
 
 @app.get("/api/schema")
 def schema(request: Request):

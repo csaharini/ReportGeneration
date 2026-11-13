@@ -1,6 +1,24 @@
 # Trailer Certification Report Generator
+
+The app now has a Next.js + Tailwind frontend in `../frontend` and a FastAPI
+backend in this folder. Run both services during development:
+
+```powershell
+# Terminal 1 — API, database access, and document generation
+cd proj
 pip install -r requirements.txt
-uvicorn main:app --reload      # open http://127.0.0.1:8000
+uvicorn main:app --reload
+
+# Terminal 2 — Next.js ReportGenix UI
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://127.0.0.1:3000`. Next proxies `/api/*` to FastAPI at
+`http://127.0.0.1:8000`; configure `BACKEND_ORIGIN` in `frontend/.env.local`
+when the API is elsewhere. The backend root URL redirects to the frontend; set
+`FRONTEND_ORIGIN` in its environment when deploying.
 
 - To enable automatic project lookup, set `RAE_DB_HOST`, `RAE_DB_PORT`, `RAE_DB_NAME`, `RAE_DB_USER`, and `RAE_DB_PASSWORD` on the app server; see `.env.example`.
 - Entering an RAE ID looks up `projects.project_id` and fills Project name with `projects.project_name`; it also accepts `subprojects.table_id` when a subproject ID is supplied. Projects without subprojects are supported.
