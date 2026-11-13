@@ -1164,7 +1164,10 @@ export default function ReportGenix() {
               <button
                 onClick={() => {
                   if (route === "home") router.push("/projects");
-                  else if (route === "projects") router.push("/issue");
+                  else if (route === "projects") {
+                    const firstSection = schema.sections[0];
+                    router.push(firstSection ? `/section/${firstSection.id}` : "/layout");
+                  }
                   else if (route === "section") {
                     const idx = schema.sections.findIndex((s) => s.id === activeSection.id);
                     router.push(idx < schema.sections.length - 1 ? `/section/${schema.sections[idx + 1].id}` : "/layout");
